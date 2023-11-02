@@ -23,6 +23,8 @@
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::usize;
 
 use crate::analyze::Info;
 use crate::vm::{Insn, Prog};
@@ -557,9 +559,11 @@ impl DelegateBuilder {
             // The "s" flag is for allowing `.` to match `\n`
             let inner1 = ["^(?s:.)", &self.re[1..]].concat();
             let compiled1 = compile_inner(&inner1, options)?;
+            let locations = RefCell::new(compiled.capture_locations());
+            let locations1 = RefCell::new(compiled1.capture_locations());
             Ok(Insn::Delegate {
-                inner: Box::new(compiled),
-                inner1: Some(Box::new(compiled1)),
+                inner: Box::new((compiled, locations)),
+                inner1: Some(Box::new((compiled1, locations1))),
                 start_group,
                 end_group,
             })
@@ -567,8 +571,9 @@ impl DelegateBuilder {
             let size = self.min_size;
             Ok(Insn::DelegateSized(Box::new(compiled), size))
         } else {
+            let locations = RefCell::new(compiled.capture_locations());
             Ok(Insn::Delegate {
-                inner: Box::new(compiled),
+                inner: Box::new((compiled, locations)),
                 inner1: None,
                 start_group,
                 end_group,
@@ -707,7 +712,7 @@ mod tests {
     fn assert_delegate(insn: &Insn, re: &str) {
         match insn {
             Insn::Delegate { inner, .. } => {
-                assert_eq!(inner.as_str(), re);
+                assert_eq!(inner.0.as_str(), re);
             }
             _ => {
                 panic!("Expected Insn::Delegate but was {:#?}", insn);

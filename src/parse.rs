@@ -25,11 +25,11 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use bit_set::BitSet;
-use regex::escape;
 use alloc::collections::BTreeMap;
+use bit_set::BitSet;
 use core::convert::TryInto;
 use core::usize;
+use regex::escape;
 
 use crate::LookAround::*;
 use crate::{codepoint_len, CompileError, Error, Expr, ParseError, Result, MAX_RECURSION};

@@ -74,11 +74,17 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-
+use core::cell::RefCell;
+use core::usize;
+use regex::CaptureLocations;
 use regex::Regex;
 
 use crate::error::RuntimeError;
-use crate::{codepoint_len, prev_codepoint_ix, Error, RegexOptions, Result};
+use crate::prev_codepoint_ix;
+use crate::CowRef;
+use crate::Error;
+use crate::Result;
+use crate::{codepoint_len, RegexOptions};
 
 /// Enable tracing of VM execution. Only for debugging/investigating.
 const OPTION_TRACE: u32 = 1 << 0;
@@ -174,7 +180,7 @@ pub enum Insn {
     /// Delegate matching to the regex crate
     Delegate {
         /// The regex
-        inner: Box<Regex>,
+        inner: Box<(Regex, RefCell<CaptureLocations>)>,
         /// The same regex but matching an additional character on the left.
         ///
         /// E.g. if `inner` is `^\b`, `inner1` is `^(?s:.)\b`. Why do we need this? Because `\b`
@@ -185,7 +191,7 @@ pub enum Insn {
         ///
         /// We only need this for regexes that "look left", i.e. need to know what the previous
         /// character was.
-        inner1: Option<Box<Regex>>,
+        inner1: Option<Box<(Regex, RefCell<CaptureLocations>)>>,
         /// The first group number that this regex captures (if it contains groups)
         start_group: usize,
         /// The last group number
@@ -419,23 +425,46 @@ fn matches_literal(s: &str, ix: usize, end: usize, literal: &str) -> bool {
 
 /// Run the program with trace printing for debugging.
 pub fn run_trace(prog: &Prog, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
-    run(prog, s, pos, OPTION_TRACE, &RegexOptions::default())
+    run(prog, s, pos, OPTION_TRACE, &RegexOptions::default(), None)
 }
 
 /// Run the program with default options.
 pub fn run_default(prog: &Prog, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
-    run(prog, s, pos, 0, &RegexOptions::default())
+    run(prog, s, pos, 0, &RegexOptions::default(), None)
 }
 
-/// Run the program with options.
-#[allow(clippy::cognitive_complexity)]
 pub(crate) fn run(
     prog: &Prog,
     s: &str,
     pos: usize,
     option_flags: u32,
     options: &RegexOptions,
+    n_groups: Option<usize>,
 ) -> Result<Option<Vec<usize>>> {
+    let mut locations = Vec::new();
+    Ok(run_to(
+        &mut locations,
+        prog,
+        s,
+        pos,
+        option_flags,
+        options,
+        n_groups,
+    )?
+    .then_some(locations))
+}
+
+/// Run the program with options.
+#[allow(clippy::cognitive_complexity)]
+pub(crate) fn run_to(
+    locations: &mut Vec<usize>,
+    prog: &Prog,
+    s: &str,
+    pos: usize,
+    option_flags: u32,
+    options: &RegexOptions,
+    n_groups: Option<usize>,
+) -> Result<bool> {
     let mut state = State::new(prog.n_saves, MAX_STACK, option_flags);
     #[cfg(feature = "std")]
     if option_flags & OPTION_TRACE != 0 {
@@ -468,7 +497,12 @@ pub(crate) fn run(
                             state.save(0, slot1);
                         }
                     }
-                    return Ok(Some(state.saves));
+                    if let Some(n_groups) = n_groups {
+                        locations.extend(state.saves.into_iter().take(n_groups * 2));
+                    } else {
+                        locations.extend(state.saves.into_iter());
+                    };
+                    return Ok(true);
                 }
                 Insn::Any => {
                     if ix < s.len() {
@@ -654,13 +688,18 @@ pub(crate) fn run(
                     // need to have an anchor: `^foo` (without `^`, it would match `foo` anywhere).
                     // But regex like `^foo` won't match in `bar foo` with `find_at(s, 4)` because
                     // `^` only matches at the beginning of the text.
-                    let re = match *inner1 {
-                        Some(ref inner1) if ix > 0 => {
+                    let reg = match inner1 {
+                        Some(inner1) if ix > 0 => {
                             ix = prev_codepoint_ix(s, ix);
                             inner1
                         }
                         _ => inner,
                     };
+                    let re = &reg.0;
+                    let mut locations = reg
+                        .1
+                        .try_borrow_mut()
+                        .map_or_else(|_| CowRef::Owned(re.capture_locations()), CowRef::Borrowed);
                     if start_group == end_group {
                         // No groups, so we can use `find` which is faster than `captures_read`
                         match re.find(&s[ix..]) {
@@ -668,7 +707,6 @@ pub(crate) fn run(
                             _ => break 'fail,
                         }
                     } else {
-                        let mut locations = re.capture_locations();
                         if let Some(m) = re.captures_read(&mut locations, &s[ix..]) {
                             for i in 0..(end_group - start_group) {
                                 let slot = (start_group + i) * 2;
@@ -700,7 +738,7 @@ pub(crate) fn run(
         }
         // "break 'fail" goes here
         if state.stack.is_empty() {
-            return Ok(None);
+            return Ok(false);
         }
 
         backtrack_count += 1;
