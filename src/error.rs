@@ -1,6 +1,7 @@
 use alloc::string::String;
 use core::fmt;
 use regex_automata::meta::BuildError as RaBuildError;
+use regex_syntax::Error as RsParseError;
 
 /// Result type for this crate with specific error enum.
 pub type Result<T> = ::core::result::Result<T, Error>;
@@ -61,8 +62,10 @@ pub enum ParseError {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum CompileError {
-    /// Regex crate error
-    InnerError(RaBuildError),
+    /// regex-syntax crate error
+    InnerSyntaxError(RsParseError),
+    /// regex-automata crate error
+    InnerBuildError(RaBuildError),
     /// Look-behind assertion without constant size
     LookBehindNotConst,
     /// Couldn't parse group name
@@ -122,7 +125,8 @@ impl fmt::Display for ParseError {
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            CompileError::InnerError(e) => write!(f, "Regex error: {}", e),
+            CompileError::InnerSyntaxError(e) => write!(f, "Regex error: {}", e),
+            CompileError::InnerBuildError(e) => write!(f, "Regex error: {}", e),
             CompileError::LookBehindNotConst => {
                 write!(f, "Look-behind assertion without constant size")
             },
