@@ -29,7 +29,7 @@ use alloc::collections::BTreeMap;
 use bit_set::BitSet;
 use core::convert::TryInto;
 use core::usize;
-use regex::escape;
+use regex_syntax::escape;
 
 use crate::LookAround::*;
 use crate::{codepoint_len, CompileError, Error, Expr, ParseError, Result, MAX_RECURSION};
