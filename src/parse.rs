@@ -847,13 +847,10 @@ impl<'a> Parser<'a> {
     }
 
     fn optimize(&self, mut expr: Expr) -> Expr {
-        let mut num = 0;
         loop {
             let (new_expr, changed) = self.optimize_expr_pass(expr);
             expr = new_expr;
-            num += 1;
             if !changed {
-                eprintln!("optimize_iter: {}", num);
                 break expr;
             }
         }
@@ -947,7 +944,7 @@ impl<'a> Parser<'a> {
                             children
                         });
                     if children.len() == 1 {
-                        children.into_iter().next().unwrap()
+                        mark_change!(children.into_iter().next().unwrap())
                     } else {
                         Expr::Concat(children)
                     }
@@ -968,7 +965,7 @@ impl<'a> Parser<'a> {
                         })
                         .collect();
                     if children.len() == 1 {
-                        children.into_iter().next().unwrap()
+                        mark_change!(children.into_iter().next().unwrap())
                     } else {
                         Expr::Alt(children)
                     }
