@@ -99,11 +99,15 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn new(max_group: usize) -> Compiler {
+    fn new(max_group: usize, options: RegexOptions) -> Compiler {
         Compiler {
             b: VMBuilder::new(max_group),
-            options: Default::default(),
+            options,
         }
+    }
+
+    fn new_with_default_options(max_group: usize) -> Compiler {
+        Self::new(max_group, RegexOptions::default())
     }
 
     fn visit(&mut self, info: &Info<'_>, hard: bool) -> Result<()> {
@@ -514,7 +518,14 @@ pub(crate) fn compile_inner(
 
 /// Compile the analyzed expressions into a program.
 pub fn compile(info: &Info<'_>) -> Result<Prog> {
-    let mut c = Compiler::new(info.end_group);
+    let mut c = Compiler::new_with_default_options(info.end_group);
+    c.visit(info, false)?;
+    c.b.add(Insn::End);
+    Ok(c.b.build())
+}
+
+pub(crate) fn compile_with_options(info: &Info<'_>, options: RegexOptions) -> Result<Prog> {
+    let mut c = Compiler::new(info.end_group, options);
     c.visit(info, false)?;
     c.b.add(Insn::End);
     Ok(c.b.build())
@@ -584,7 +595,6 @@ mod tests {
     use crate::parse::ExprTree;
     use crate::vm::Insn::*;
     use alloc::vec;
-    use bit_set::BitSet;
     use matches::assert_matches;
 
     #[test]
@@ -604,12 +614,11 @@ mod tests {
                     casei: false,
                 },
             ]),
-            backrefs: BitSet::new(),
             named_groups: Default::default(),
         };
         let info = analyze(&tree).unwrap();
 
-        let mut c = Compiler::new(0);
+        let mut c = Compiler::new_with_default_options(0);
         // Force "hard" so that compiler doesn't just delegate
         c.visit(&info, true).unwrap();
         c.b.add(Insn::End);

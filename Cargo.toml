@@ -18,7 +18,8 @@ default = ["unicode", "perf", "std"]
 track_caller = []
 perf = ["regex-automata/perf"]
 unicode = ["regex-automata/unicode", "regex-syntax/unicode"]
-std = ["regex-automata/std", "regex-syntax/std", "bit-set/std"]
+std = ["regex-automata/std", "regex-syntax/std"]
+serde = ["dep:serde"]
 
 [dependencies.regex-automata]
 version = "0.4"
@@ -29,14 +30,16 @@ features = ["alloc", "syntax", "meta", "nfa", "dfa", "hybrid"]
 version = "0.8"
 default-features = false
 
-[dependencies.bit-set]
-version = "0.5.3"
-default-features = false
-
 [dependencies.spin]
 version = "0.9"
 default-features = false
 features = ["spin_mutex"]
+
+[dependencies.serde]
+version = "1.0"
+optional = true
+default-features = false
+features = ["alloc", "derive"]
 
 [dev-dependencies]
 criterion = "0.5.1"

@@ -21,15 +21,15 @@
 //! A regex parser yielding an AST.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-
-use alloc::collections::BTreeMap;
-use bit_set::BitSet;
 use core::convert::TryInto;
 use core::usize;
 use regex_syntax::escape;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::LookAround::*;
 use crate::{codepoint_len, CompileError, Error, Expr, ParseError, Result, MAX_RECURSION};
@@ -43,17 +43,18 @@ const FLAG_UNICODE: u32 = 1 << 5;
 
 pub(crate) type NamedGroups = BTreeMap<String, usize>;
 
-#[derive(Debug)]
+/// Regular expression AST Tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExprTree {
+    /// The expr
     pub expr: Expr,
-    pub backrefs: BitSet,
-    pub named_groups: NamedGroups,
+    pub(crate) named_groups: NamedGroups,
 }
 
 #[derive(Debug)]
 pub(crate) struct Parser<'a> {
     re: &'a str, // source
-    backrefs: BitSet,
     flags: u32,
     named_groups: NamedGroups,
     numeric_backrefs: bool,
@@ -74,7 +75,6 @@ impl<'a> Parser<'a> {
         }
         Ok(ExprTree {
             expr,
-            backrefs: Default::default(),
             named_groups: p.named_groups,
         })
     }
@@ -82,7 +82,6 @@ impl<'a> Parser<'a> {
     fn new(re: &str) -> Parser<'_> {
         Parser {
             re,
-            backrefs: Default::default(),
             named_groups: Default::default(),
             numeric_backrefs: false,
             flags: FLAG_UNICODE,
@@ -263,9 +262,6 @@ impl<'a> Parser<'a> {
             b'(' => self.parse_group(ix, depth),
             b'\\' => {
                 let (next, expr) = self.parse_escape(ix)?;
-                if let Expr::Backref(group) = expr {
-                    self.backrefs.insert(group);
-                }
                 Ok((next, expr))
             }
             b'+' | b'*' | b'?' | b'|' | b')' => Ok((ix, Expr::Empty)),
