@@ -69,12 +69,12 @@
 //! 5. We continue with the previously saved thread at PC 4 and IX 0 (backtracking)
 //! 6. Both `Lit("a")` and `Lit("c")` match and we reach `End` -> successful match (index 0 to 2)
 
+use bit_set::BitSet;
 use regex_automata::meta::Regex;
 use regex_automata::util::look::LookMatcher;
 use regex_automata::util::primitives::NonMaxUsize;
 use regex_automata::Anchored;
 use regex_automata::Input;
-use std::collections::BTreeSet;
 use std::ops::Range;
 
 use crate::codepoint_len;
@@ -243,6 +243,8 @@ struct State {
     nsave: usize,
     /// Search slots for regex-automata
     inner_slots: Vec<Option<NonMaxUsize>>,
+    /// Slot mask
+    slot_mask: BitSet,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +272,7 @@ impl State {
             oldsave: Vec::new(),
             nsave: 0,
             inner_slots: Vec::new(),
+            slot_mask: BitSet::new(),
         }
     }
 
@@ -279,7 +282,8 @@ impl State {
         self.stack.clear();
         self.oldsave.clear();
         self.nsave = 0;
-        self.inner_slots.clear();
+        // inner_slots no need to clear, as it is cleared every time before use
+        // slot_mask no need to clear, as it is cleared every time before use
     }
 }
 
@@ -405,16 +409,16 @@ impl VM {
             let start = end - self.state.stack[count].nsave;
             (start, end)
         };
-        let mut saved = BTreeSet::new();
+        self.state.slot_mask.clear();
         // keep all the old saves of our branch (they're all for different slots)
         for &Save { slot, .. } in &self.state.oldsave[oldsave_start..oldsave_end] {
-            saved.insert(slot);
+            self.state.slot_mask.insert(slot);
         }
         let mut oldsave_ix = oldsave_end;
         // for other old saves, keep them only if they're for a slot that we haven't saved yet
         for ix in oldsave_end..self.state.oldsave.len() {
             let Save { slot, .. } = self.state.oldsave[ix];
-            let new_slot = saved.insert(slot);
+            let new_slot = self.state.slot_mask.insert(slot);
             if new_slot {
                 // put the save we want to keep (ix) after the ones we already have (oldsave_ix)
                 // note that it's fine if the indexes are the same (then swapping is a no-op)
@@ -461,7 +465,6 @@ impl VM {
         Ok(r?.then_some(locations))
     }
 
-    /// Run the program with options.
     #[allow(clippy::cognitive_complexity)]
     pub(crate) fn run_to(
         &mut self,

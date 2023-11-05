@@ -37,6 +37,7 @@ optional = true
 features = ["derive"]
 
 [dependencies]
+bit-set = "0.5"
 compact_str = "0.7"
 
 [dev-dependencies]
