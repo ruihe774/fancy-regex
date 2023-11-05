@@ -76,6 +76,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 use core::usize;
 use regex_automata::meta::Regex;
+use regex_automata::util::look::LookMatcher;
 use regex_automata::util::primitives::NonMaxUsize;
 use regex_automata::Anchored;
 use regex_automata::Input;
@@ -83,6 +84,7 @@ use regex_automata::Input;
 use crate::codepoint_len;
 use crate::error::RuntimeError;
 use crate::prev_codepoint_ix;
+use crate::Assertion;
 use crate::Error;
 use crate::Result;
 use crate::DEFAULT_BACKTRACK_LIMIT;
@@ -109,6 +111,8 @@ pub enum Insn {
     Any,
     /// Match any character (not including newline)
     AnyNoNL,
+    /// Assertions
+    Assertion(Assertion),
     /// Match the literal string at the current index
     Lit {
         /// The Literal string
@@ -464,6 +468,7 @@ pub(crate) fn run_to(
 ) -> Result<bool> {
     let mut state = State::new(prog.n_saves, MAX_STACK, option_flags);
     let mut inner_slots: Vec<Option<NonMaxUsize>> = Vec::new();
+    let look_matcher = LookMatcher::new();
     #[cfg(feature = "std")]
     if option_flags & OPTION_TRACE != 0 {
         println!("pos\tinstruction");
@@ -514,6 +519,38 @@ pub(crate) fn run_to(
                     if ix < range.end && s.as_bytes()[ix] != b'\n' {
                         ix += codepoint_len_at(s, ix);
                     } else {
+                        break 'fail;
+                    }
+                }
+                Insn::Assertion(assertion) => {
+                    if !match assertion {
+                        Assertion::StartText => look_matcher.is_start(s.as_bytes(), ix),
+                        Assertion::EndText => look_matcher.is_end(s.as_bytes(), ix),
+                        Assertion::StartLine { crlf: false } => {
+                            look_matcher.is_start_lf(s.as_bytes(), ix)
+                        }
+                        Assertion::StartLine { crlf: true } => {
+                            look_matcher.is_start_crlf(s.as_bytes(), ix)
+                        }
+                        Assertion::EndLine { crlf: false } => {
+                            look_matcher.is_end_lf(s.as_bytes(), ix)
+                        }
+                        Assertion::EndLine { crlf: true } => {
+                            look_matcher.is_end_crlf(s.as_bytes(), ix)
+                        }
+                        Assertion::LeftWordBoundary => look_matcher
+                            .is_word_start_unicode(s.as_bytes(), ix)
+                            .unwrap(),
+                        Assertion::RightWordBoundary => {
+                            look_matcher.is_word_end_unicode(s.as_bytes(), ix).unwrap()
+                        }
+                        Assertion::WordBoundary => {
+                            look_matcher.is_word_unicode(s.as_bytes(), ix).unwrap()
+                        }
+                        Assertion::NotWordBoundary => look_matcher
+                            .is_word_unicode_negate(s.as_bytes(), ix)
+                            .unwrap(),
+                    } {
                         break 'fail;
                     }
                 }
