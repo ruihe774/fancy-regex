@@ -29,7 +29,6 @@ use core::borrow::Borrow;
 use core::convert::TryInto;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
-use core::usize;
 use regex_syntax::escape_into;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
