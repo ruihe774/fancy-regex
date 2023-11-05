@@ -21,7 +21,7 @@
 //! A regex parser yielding an AST.
 
 use compact_str::CompactString;
-use regex_syntax::escape_into;
+use regex_syntax::escape;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
@@ -61,7 +61,7 @@ pub enum Expr {
     /// The string as a literal, e.g. `a`
     Literal {
         /// The string to match
-        val: String,
+        val: CompactString,
         /// Whether match is case-insensitive or not
         casei: bool,
     },
@@ -93,7 +93,7 @@ pub enum Expr {
     /// to represent all the expressions in the AST, e.g. character classes.
     Delegate {
         /// The regex
-        inner: String,
+        inner: CompactString,
         /// How many characters the regex matches
         size: usize, // TODO: move into analysis result
         /// Whether the matching is case-insensitive or not
@@ -435,7 +435,7 @@ impl<'a> Parser<'a> {
         if ix < re.len() {
             return Err(Error::ParseError(
                 ix,
-                ParseError::GeneralParseError("end of string not reached".to_string()),
+                ParseError::GeneralParseError("end of string not reached".into()),
             ));
         }
         let expr = p.optimize(expr);
@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
                 Ok((
                     next,
                     Expr::Literal {
-                        val: String::from(&self.re[ix..next]),
+                        val: CompactString::from(&self.re[ix..next]),
                         casei: self.flag(FLAG_CASEI),
                     },
                 ))
@@ -667,7 +667,7 @@ impl<'a> Parser<'a> {
             // here the name is parsed but it is invalid
             Err(Error::ParseError(
                 ix,
-                ParseError::InvalidGroupNameBackref(id.to_string()),
+                ParseError::InvalidGroupNameBackref(id.into()),
             ))
         } else {
             // in this case the name can't be parsed
@@ -732,7 +732,7 @@ impl<'a> Parser<'a> {
             (
                 end,
                 Expr::Delegate {
-                    inner: String::from(&self.re[ix..end]),
+                    inner: CompactString::from(&self.re[ix..end]),
                     size: 1,
                     casei: self.flag(FLAG_CASEI),
                 },
@@ -746,7 +746,7 @@ impl<'a> Parser<'a> {
             (
                 end,
                 Expr::Delegate {
-                    inner: String::from(s),
+                    inner: CompactString::from(s),
                     size: 1,
                     casei: false,
                 },
@@ -777,7 +777,7 @@ impl<'a> Parser<'a> {
             (
                 end,
                 Expr::Delegate {
-                    inner: String::from(&self.re[ix..end]),
+                    inner: CompactString::from(&self.re[ix..end]),
                     size: 1,
                     casei: self.flag(FLAG_CASEI),
                 },
@@ -853,7 +853,7 @@ impl<'a> Parser<'a> {
         };
         let codepoint = u32::from_str_radix(s, 16).unwrap();
         if let Some(c) = ::std::char::from_u32(codepoint) {
-            let mut inner = String::with_capacity(4);
+            let mut inner = CompactString::default();
             inner.push(c);
             Ok((
                 end,
@@ -870,7 +870,7 @@ impl<'a> Parser<'a> {
     fn parse_class(&mut self, ix: usize) -> Result<(usize, Expr)> {
         let bytes = self.re.as_bytes();
         let mut ix = ix + 1; // skip opening '['
-        let mut class = String::new();
+        let mut class = CompactString::default();
         let mut nest = 1;
         class.push('[');
 
@@ -897,7 +897,7 @@ impl<'a> Parser<'a> {
                     match expr {
                         Expr::Literal { val, .. } => {
                             debug_assert_eq!(val.chars().count(), 1);
-                            escape_into(&val, &mut class);
+                            class.push_str(&escape(&val));
                         }
                         Expr::Delegate { inner, .. } => {
                             class.push_str(&inner);
@@ -1003,7 +1003,7 @@ impl<'a> Parser<'a> {
         } else if self.re.as_bytes()[ix] != b')' {
             return Err(Error::ParseError(
                 ix,
-                ParseError::GeneralParseError("expected close paren".to_string()),
+                ParseError::GeneralParseError("expected close paren".into()),
             ));
         }
         Ok(ix + 1)
@@ -1062,7 +1062,7 @@ impl<'a> Parser<'a> {
                     } else if self.re.as_bytes()[ix] != b')' {
                         return Err(Error::ParseError(
                             ix,
-                            ParseError::GeneralParseError("expected close paren".to_string()),
+                            ParseError::GeneralParseError("expected close paren".into()),
                         ));
                     };
                     self.flags = oldflags;
@@ -1101,7 +1101,7 @@ impl<'a> Parser<'a> {
                 return Err(Error::ParseError(
                     end,
                     ParseError::GeneralParseError(
-                        "expected conditional to be a backreference or at least an expression for when the condition is true".to_string()
+                        "expected conditional to be a backreference or at least an expression for when the condition is true".into()
                     )
                 ));
             }
@@ -1302,7 +1302,16 @@ impl<'a> Parser<'a> {
                         // fold repeated literal
                         Expr::Literal { val, casei } if lo == hi && hi != usize::MAX => {
                             mark_change!(Expr::Literal {
-                                val: val.repeat(lo),
+                                val: {
+                                    let len = val.len() * lo;
+                                    [val].iter().cycle().take(lo).fold(
+                                        CompactString::with_capacity(len),
+                                        |mut acc, item| {
+                                            acc.push_str(&item);
+                                            acc
+                                        },
+                                    )
+                                },
                                 casei
                             })
                         }
@@ -1385,13 +1394,15 @@ fn is_hex_digit(b: u8) -> bool {
 
 pub(crate) fn make_literal(s: &str) -> Expr {
     Expr::Literal {
-        val: String::from(s),
+        val: CompactString::from(s),
         casei: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use compact_str::CompactString;
+
     use crate::parse::{make_literal, parse_id};
     use crate::LookAround::*;
     use crate::{Assertion, Expr};
@@ -1486,7 +1497,7 @@ mod tests {
         assert_eq!(
             p("\\h"),
             Expr::Delegate {
-                inner: String::from("[0-9A-Fa-f]"),
+                inner: CompactString::from("[0-9A-Fa-f]"),
                 size: 1,
                 casei: false
             }
@@ -1494,7 +1505,7 @@ mod tests {
         assert_eq!(
             p("\\H"),
             Expr::Delegate {
-                inner: String::from("[^0-9A-Fa-f]"),
+                inner: CompactString::from("[^0-9A-Fa-f]"),
                 size: 1,
                 casei: false
             }
@@ -1642,7 +1653,7 @@ mod tests {
         assert_eq!(
             p("\\p{Greek}"),
             Expr::Delegate {
-                inner: String::from("\\p{Greek}"),
+                inner: CompactString::from("\\p{Greek}"),
                 size: 1,
                 casei: false
             }
@@ -1650,7 +1661,7 @@ mod tests {
         assert_eq!(
             p("\\pL"),
             Expr::Delegate {
-                inner: String::from("\\pL"),
+                inner: CompactString::from("\\pL"),
                 size: 1,
                 casei: false
             }
@@ -1658,7 +1669,7 @@ mod tests {
         assert_eq!(
             p("\\P{Greek}"),
             Expr::Delegate {
-                inner: String::from("\\P{Greek}"),
+                inner: CompactString::from("\\P{Greek}"),
                 size: 1,
                 casei: false
             }
@@ -1666,7 +1677,7 @@ mod tests {
         assert_eq!(
             p("\\PL"),
             Expr::Delegate {
-                inner: String::from("\\PL"),
+                inner: CompactString::from("\\PL"),
                 size: 1,
                 casei: false
             }
@@ -1674,7 +1685,7 @@ mod tests {
         assert_eq!(
             p("(?i)\\p{Ll}"),
             Expr::Delegate {
-                inner: String::from("\\p{Ll}"),
+                inner: CompactString::from("\\p{Ll}"),
                 size: 1,
                 casei: true
             }
@@ -1784,13 +1795,13 @@ mod tests {
             Expr::Concat(vec![
                 make_literal("'"),
                 Expr::Delegate {
-                    inner: String::from("[a-zA-Z_]"),
+                    inner: CompactString::from("[a-zA-Z_]"),
                     size: 1,
                     casei: false
                 },
                 Expr::Repeat {
                     child: Box::new(Expr::Delegate {
-                        inner: String::from("[a-zA-Z0-9_]"),
+                        inner: CompactString::from("[a-zA-Z0-9_]"),
                         size: 1,
                         casei: false
                     }),
@@ -2123,14 +2134,14 @@ mod tests {
                 Expr::Assertion(Assertion::StartText),
                 Expr::Conditional {
                     condition: Box::new(Expr::Delegate {
-                        inner: "\\d".to_string(),
+                        inner: "\\d".into(),
                         size: 1,
                         casei: false,
                     }),
                     true_branch: Box::new(make_literal("abc")),
                     false_branch: Box::new(Expr::Concat(vec![
                         Expr::Delegate {
-                            inner: "\\d".to_string(),
+                            inner: "\\d".into(),
                             size: 1,
                             casei: false,
                         },
@@ -2146,14 +2157,14 @@ mod tests {
             Expr::Conditional {
                 condition: Box::new(Expr::LookAround(
                     Box::new(Expr::Delegate {
-                        inner: "\\d".to_string(),
+                        inner: "\\d".into(),
                         size: 1,
                         casei: false
                     }),
                     LookAhead
                 )),
                 true_branch: Box::new(Expr::Delegate {
-                    inner: "\\w".to_string(),
+                    inner: "\\w".into(),
                     size: 1,
                     casei: false,
                 }),

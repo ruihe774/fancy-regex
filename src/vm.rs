@@ -70,6 +70,7 @@
 //! 6. Both `Lit("a")` and `Lit("c")` match and we reach `End` -> successful match (index 0 to 2)
 
 use bit_set::BitSet;
+use compact_str::CompactString;
 use regex_automata::meta::Regex;
 use regex_automata::util::look::LookMatcher;
 use regex_automata::util::primitives::NonMaxUsize;
@@ -111,7 +112,7 @@ pub enum Insn {
     /// Match the literal string at the current index
     Lit {
         /// The Literal string
-        val: String,
+        val: CompactString,
         /// Case insensitive
         casei: bool,
     }, // should be cow?
