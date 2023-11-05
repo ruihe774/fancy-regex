@@ -20,7 +20,6 @@
 
 //! Compilation of regexes to VM.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::usize;
 use regex_automata::meta::Regex as RaRegex;

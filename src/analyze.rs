@@ -20,7 +20,6 @@
 
 //! Analysis of regex expressions.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::min;
 
