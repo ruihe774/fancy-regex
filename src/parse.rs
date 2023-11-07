@@ -678,7 +678,7 @@ impl<'a> Parser<'a> {
     fn parse_numbered_backref(&mut self, ix: usize) -> Result<(usize, Expr)> {
         if let Some((end, group)) = parse_decimal(self.re, ix) {
             // protect BitSet against unreasonably large value
-            if group < self.re.len() / 2 {
+            if cfg!(feature = "partial_parse") || group < self.re.len() / 2 {
                 self.numeric_backrefs = true;
                 return Ok((end, Expr::Backref(group)));
             }

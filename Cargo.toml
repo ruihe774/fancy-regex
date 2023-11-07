@@ -16,6 +16,7 @@ rust-version = "1.66"
 default = ["unicode", "perf"]
 # Enable #[track_caller] in unit tests.
 track_caller = []
+partial_parse = []
 perf = ["regex-automata/perf"]
 unicode = ["regex-automata/unicode", "regex-syntax/unicode"]
 serde = ["dep:serde", "compact_str/serde"]
