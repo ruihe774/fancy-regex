@@ -20,11 +20,12 @@
 
 //! A regex parser yielding an AST.
 
+use compact_str::CompactString;
 use regex_syntax::escape_into;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
@@ -396,7 +397,7 @@ fn try_collect<T>(iter: impl IntoIterator<Item = Result<T>>) -> Result<Vec<T>> {
     Ok(vec)
 }
 
-pub(crate) type NamedGroups = HashMap<String, usize>;
+pub(crate) type NamedGroups = BTreeMap<CompactString, usize>;
 
 /// Regular expression AST Tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -957,7 +958,7 @@ impl<'a> Parser<'a> {
             // Named capture group using Oniguruma syntax: (?<name>...)
             self.curr_group += 1;
             if let Some((id, skip)) = parse_id(&self.re[ix + 1..], "<", ">") {
-                self.named_groups.insert(id.to_string(), self.curr_group);
+                self.named_groups.insert(id.into(), self.curr_group);
                 (None, skip + 1)
             } else {
                 return Err(Error::ParseError(ix, ParseError::InvalidGroupName));
@@ -966,7 +967,7 @@ impl<'a> Parser<'a> {
             // Named capture group using Python syntax: (?P<name>...)
             self.curr_group += 1; // this is a capture group
             if let Some((id, skip)) = parse_id(&self.re[ix + 2..], "<", ">") {
-                self.named_groups.insert(id.to_string(), self.curr_group);
+                self.named_groups.insert(id.into(), self.curr_group);
                 (None, skip + 2)
             } else {
                 return Err(Error::ParseError(ix, ParseError::InvalidGroupName));
