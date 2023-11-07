@@ -586,7 +586,6 @@ impl<'a> DelegateBuilder<'a> {
     }
 }
 
-#[cfg(not(test))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,12 +625,12 @@ mod tests {
 
         assert_eq!(prog.len(), 8, "prog: {:?}", prog);
         assert_matches!(prog[0], Split(1, 3));
-        assert_matches!(prog[1], Lit(ref l) if l == "a");
+        assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == "a");
         assert_matches!(prog[2], Jmp(7));
         assert_matches!(prog[3], Split(4, 6));
-        assert_matches!(prog[4], Lit(ref l) if l == "b");
+        assert_matches!(prog[4], Lit { val: ref l, casei: false } if l == "b");
         assert_matches!(prog[5], Jmp(7));
-        assert_matches!(prog[6], Lit(ref l) if l == "c");
+        assert_matches!(prog[6], Lit { val: ref l, casei: false } if l == "c");
         assert_matches!(prog[7], End);
     }
 
@@ -644,7 +643,7 @@ mod tests {
         assert_matches!(prog[0], Save(0));
         assert_delegate(&prog[1], "(?:ab*)");
         assert_matches!(prog[2], Restore(0));
-        assert_matches!(prog[3], Lit(ref l) if l == "c");
+        assert_matches!(prog[3], Lit { val: ref l, casei: false } if l == "c");
         assert_matches!(prog[4], End);
     }
 
@@ -655,7 +654,7 @@ mod tests {
 
         assert_eq!(prog.len(), 5, "prog: {:?}", prog);
         assert_matches!(prog[0], Split(1, 3));
-        assert_matches!(prog[1], Lit(ref l) if l == "x");
+        assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == "x");
         assert_matches!(prog[2], FailNegativeLookAround);
         assert_delegate(&prog[3], "(?:(?:a|(?:ab))x*)");
         assert_matches!(prog[4], End);
@@ -666,30 +665,25 @@ mod tests {
     fn hard_concat_can_delegate_const_size_end() {
         let prog = compile_prog("(?:(?!x)(?:a|b)c)x*");
 
-        assert_eq!(prog.len(), 6, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
         assert_matches!(prog[0], Split(1, 3));
-        assert_matches!(prog[1], Lit(ref l) if l == "x");
+        assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == "x");
         assert_matches!(prog[2], FailNegativeLookAround);
-        assert_delegate_sized(&prog[3], "(?:[ab]c)");
-        assert_delegate(&prog[4], "x*");
-        assert_matches!(prog[5], End);
+        assert_delegate(&prog[3], "(?:[ab]cx*)");
+        assert_matches!(prog[4], End);
     }
 
     #[cfg_attr(not(feature = "std"), ignore = "this test need std")]
     #[test]
-    fn hard_concat_can_not_delegate_variable_end() {
+    fn hard_concat_can_delegate_variable_end() {
         let prog = compile_prog("(?:(?!x)(?:a|ab))x*");
 
-        assert_eq!(prog.len(), 9, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
         assert_matches!(prog[0], Split(1, 3));
-        assert_matches!(prog[1], Lit(ref l) if l == "x");
+        assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == "x");
         assert_matches!(prog[2], FailNegativeLookAround);
-        assert_matches!(prog[3], Split(4, 6));
-        assert_matches!(prog[4], Lit(ref l) if l == "a");
-        assert_matches!(prog[5], Jmp(7));
-        assert_matches!(prog[6], Lit(ref l) if l == "ab");
-        assert_delegate(&prog[7], "x*");
-        assert_matches!(prog[8], End);
+        assert_delegate(&prog[3], "(?:(?:a|(?:ab))x*)");
+        assert_matches!(prog[4], End);
     }
 
     #[test]
@@ -700,11 +694,11 @@ mod tests {
 
         assert_matches!(prog[0], BeginAtomic);
         assert_matches!(prog[1], Split(2, 6));
-        assert_matches!(prog[2], Lit(ref l) if l == "ab");
+        assert_matches!(prog[2], Lit { val: ref l, casei: false } if l == "ab");
         assert_matches!(prog[3], EndAtomic);
-        assert_matches!(prog[4], Lit(ref l) if l == "c");
+        assert_matches!(prog[4], Lit { val: ref l, casei: false } if l == "c");
         assert_matches!(prog[5], Jmp(7));
-        assert_matches!(prog[6], Lit(ref l) if l == "d");
+        assert_matches!(prog[6], Lit { val: ref l, casei: false } if l == "d");
         assert_matches!(prog[7], End);
     }
 
@@ -736,26 +730,4 @@ mod tests {
 
     #[cfg(not(feature = "std"))]
     fn assert_delegate(_: &Insn, _: &str) {}
-
-    #[cfg(feature = "std")]
-    fn assert_delegate_sized(insn: &Insn, re: &str) {
-        match insn {
-            Insn::DelegateSized(inner, ..) => {
-                assert_eq!(
-                    PATTERN_MAPPING
-                        .read()
-                        .unwrap()
-                        .get(&alloc::format!("{:?}", inner))
-                        .unwrap(),
-                    re
-                );
-            }
-            _ => {
-                panic!("Expected Insn::DelegateSized but was {:#?}", insn);
-            }
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
-    fn assert_delegate_sized(_: &Insn, _: &str) {}
 }

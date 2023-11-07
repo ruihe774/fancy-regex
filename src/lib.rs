@@ -1345,6 +1345,10 @@ pub mod internal {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use alloc::vec;
+
     use crate::parse::make_literal;
     use crate::Expr;
     use crate::Regex;
