@@ -191,6 +191,10 @@ pub enum Insn {
         start_group: usize,
         /// The last group number
         end_group: usize,
+        /// Whether to perform anchored search
+        anchored: bool,
+        /// Whether to drop 0th group
+        drop_first: bool,
     },
     /// Anchor to match at the position where the previous match ended
     ContinueFromPreviousMatchEnd,
@@ -835,9 +839,15 @@ impl VM {
                         ref inner,
                         start_group,
                         end_group,
+                        anchored,
+                        drop_first,
                     } => {
                         debug_assert!(start_group <= end_group);
-                        let input = Input::new(s).span(ix..range.end).anchored(Anchored::Yes);
+                        let input = Input::new(s).span(ix..range.end).anchored(if anchored {
+                            Anchored::Yes
+                        } else {
+                            Anchored::No
+                        });
                         if start_group == end_group {
                             // No groups, so we can use faster methods
                             match inner.search_half(&input) {
@@ -845,17 +855,21 @@ impl VM {
                                 _ => break 'fail,
                             }
                         } else {
+                            // Do we need to check start_group + 1 == end_group && !drop_first for non-capturing search?
+                            // No, because regex-automata will check this for us.
+                            let offset = drop_first as usize;
                             self.state
                                 .inner_slots
-                                .resize((end_group - start_group + 1) * 2, None);
+                                .resize((end_group - start_group + offset) * 2, None);
                             if inner
                                 .search_slots(&input, &mut self.state.inner_slots)
                                 .is_some()
                             {
                                 for i in 0..(end_group - start_group) {
                                     let slot = (start_group + i) * 2;
-                                    if let Some(start) = self.state.inner_slots[(i + 1) * 2] {
-                                        let end = self.state.inner_slots[(i + 1) * 2 + 1].unwrap();
+                                    if let Some(start) = self.state.inner_slots[(i + offset) * 2] {
+                                        let end =
+                                            self.state.inner_slots[(i + offset) * 2 + 1].unwrap();
                                         self.save(slot, start.get());
                                         self.save(slot + 1, end.get());
                                     } else {

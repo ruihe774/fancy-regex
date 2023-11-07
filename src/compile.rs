@@ -23,6 +23,7 @@
 use regex_automata::meta::Regex as RaRegex;
 use regex_automata::meta::{Builder as RaBuilder, Config as RaConfig};
 use std::borrow::Borrow;
+use std::collections::VecDeque;
 #[cfg(test)]
 use std::{collections::BTreeMap, sync::RwLock};
 
@@ -535,24 +536,35 @@ impl Compiler {
 
         let mut delegate_builder = DelegateBuilder::new();
         for info in infos {
-            delegate_builder = delegate_builder.push(info.borrow());
+            delegate_builder.push(info.borrow());
         }
-        let delegate = delegate_builder.build(&self.options)?;
-
-        self.b.add(delegate);
-        Ok(())
+        delegate_builder.build(
+            RegexOptions {
+                anchored: true,
+                ..self.options
+            },
+            &mut self.b,
+        )
     }
 
     fn compile_delegate(&mut self, info: &Info) -> Result<()> {
-        let insn = match info.expr {
-            Expr::Literal { val, casei } => Insn::Lit {
+        Ok(match info.expr {
+            Expr::Literal { val, casei } => self.b.add(Insn::Lit {
                 val: val.clone(),
                 casei: *casei,
-            },
-            _ => DelegateBuilder::new().push(info).build(&self.options)?,
-        };
-        self.b.add(insn);
-        Ok(())
+            }),
+            _ => {
+                let mut builder = DelegateBuilder::new();
+                builder.push(info);
+                builder.build(
+                    RegexOptions {
+                        anchored: true,
+                        ..self.options
+                    },
+                    &mut self.b,
+                )?
+            }
+        })
     }
 }
 
@@ -561,7 +573,7 @@ static PATTERN_MAPPING: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap:
 
 pub(crate) fn compile_inner(
     hir: &regex_syntax::hir::Hir,
-    options: &RegexOptions,
+    options: RegexOptions,
 ) -> Result<RaRegex> {
     let mut config = RaConfig::new();
     if let Some(size_limit) = options.delegate_size_limit {
@@ -570,6 +582,9 @@ pub(crate) fn compile_inner(
     if let Some(dfa_size_limit) = options.delegate_dfa_size_limit {
         config = config.dfa_size_limit(Some(dfa_size_limit));
     }
+
+    // Prefilter of regex-automata is meaningless in anchored search.
+    config = config.auto_prefilter(!options.anchored);
 
     let re = RaBuilder::new()
         .configure(config)
@@ -597,52 +612,78 @@ pub(crate) fn compile_with_options(info: &Info<'_>, options: RegexOptions) -> Re
 }
 
 struct DelegateBuilder<'a> {
-    exprs: Vec<&'a Expr>,
-    min_size: usize,
-    const_size: bool,
-    start_group: Option<usize>,
-    end_group: usize,
+    infos: Vec<&'a Info<'a>>,
 }
 
 impl<'a> DelegateBuilder<'a> {
     fn new() -> Self {
-        Self {
-            exprs: Vec::new(),
-            min_size: 0,
-            const_size: true,
-            start_group: None,
-            end_group: 0,
+        Self { infos: Vec::new() }
+    }
+
+    fn push(&mut self, info: &'a Info<'a>) {
+        if let Expr::Concat(_) = info.expr {
+            for child_info in &info.children {
+                self.push(child_info);
+            }
+        } else {
+            self.infos.push(info);
         }
     }
 
-    fn push(mut self, info: &Info<'a>) -> Self {
-        // TODO: might want to detect case of a group with no captures
-        //  inside, so we can run find() instead of captures()
+    fn build(self, options: RegexOptions, b: &mut VMBuilder) -> Result<()> {
+        let infos = self.infos;
+        let start_group = infos
+            .first()
+            .expect("expected at least one expression")
+            .start_group;
+        let end_group = infos.last().unwrap().end_group;
+        let mut exprs: VecDeque<_> = infos.into_iter().map(|info| info.expr).collect();
+        let mut anchored = options.anchored;
+        let mut drop_first = true;
 
-        self.min_size += info.min_size;
-        self.const_size &= info.const_size;
-        if self.start_group.is_none() {
-            self.start_group = Some(info.start_group);
+        while match exprs.front() {
+            Some(Expr::Repeat {
+                child,
+                lo: 0,
+                hi: usize::MAX,
+                greedy: false,
+            }) => matches!(child.as_ref(), Expr::Any { newline: true }),
+            _ => false,
+        } {
+            exprs.pop_front();
+            anchored = false;
         }
-        self.end_group = info.end_group;
 
-        self.exprs.push(&info.expr);
+        match exprs.len() {
+            1 => {
+                exprs[0] = match exprs[0] {
+                    Expr::Group(child) => {
+                        drop_first = false;
+                        &child
+                    }
+                    e => e,
+                }
+            }
+            0 => return Ok(()),
+            _ => (),
+        }
 
-        self
-    }
+        let hir = Expr::to_hir(exprs)?;
+        let compiled = compile_inner(
+            &hir,
+            RegexOptions {
+                anchored,
+                ..options
+            },
+        )?;
 
-    fn build(self, options: &RegexOptions) -> Result<Insn> {
-        let start_group = self.start_group.expect("Expected at least one expression");
-        let end_group = self.end_group;
-
-        let hir = Expr::to_hir(self.exprs)?;
-        let compiled = compile_inner(&hir, options)?;
-
-        Ok(Insn::Delegate {
+        Ok(b.add(Insn::Delegate {
             inner: compiled,
             start_group,
             end_group,
-        })
+            anchored,
+            drop_first,
+        }))
     }
 }
 
@@ -676,7 +717,7 @@ mod tests {
         };
         let info = analyze(&tree).unwrap();
 
-        let mut c = Compiler::new_with_default_options(0);
+        let mut c = Compiler::new(0, RegexOptions::default());
         // Force "hard" so that compiler doesn't just delegate
         c.visit(&info, true).unwrap();
         c.b.add(Insn::End);
@@ -761,7 +802,14 @@ mod tests {
     fn compile_prog(re: &str) -> Vec<Insn> {
         let tree = Expr::parse_tree(re).unwrap();
         let info = analyze(&tree).unwrap();
-        let prog = compile(&info).unwrap();
+        let prog = compile_with_options(
+            &info,
+            RegexOptions {
+                anchored: true,
+                ..RegexOptions::default()
+            },
+        )
+        .unwrap();
         prog.body
     }
 
