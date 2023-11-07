@@ -981,7 +981,6 @@ fn reset_bitset(set: &mut BitSet) {
     *set = BitSet::from_bit_vec(bitvec);
 }
 
-#[cfg(not(test))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,107 +988,155 @@ mod tests {
 
     #[test]
     fn state_push_pop() {
-        let mut state = State::new(1, 0);
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 1,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
 
-        state.push(0, 0).unwrap();
-        state.push(1, 1).unwrap();
-        assert_eq!(state.pop(), (1, 1));
-        assert_eq!(state.pop(), (0, 0));
-        assert!(state.stack.is_empty());
+        vm.push(0, 0).unwrap();
+        vm.push(1, 1).unwrap();
+        assert_eq!(vm.pop(), (1, 1));
+        assert_eq!(vm.pop(), (0, 0));
+        assert!(vm.state.stack.is_empty());
 
-        state.push(2, 2).unwrap();
-        assert_eq!(state.pop(), (2, 2));
-        assert!(state.stack.is_empty());
+        vm.push(2, 2).unwrap();
+        assert_eq!(vm.pop(), (2, 2));
+        assert!(vm.state.stack.is_empty());
     }
 
     #[test]
     fn state_save_override() {
-        let mut state = State::new(1, 0);
-        state.save(0, 10).unwrap();
-        state.push(0, 0).unwrap();
-        state.save(0, 20).unwrap();
-        assert_eq!(state.pop(), (0, 0));
-        assert_eq!(state.get(0), 10);
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 1,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
+        vm.save(0, 10);
+        vm.push(0, 0).unwrap();
+        vm.save(0, 20);
+        assert_eq!(vm.pop(), (0, 0));
+        assert_eq!(vm.get(0), 10);
     }
 
     #[test]
     fn state_save_override_twice() {
-        let mut state = State::new(1, 0);
-        state.save(0, 10).unwrap();
-        state.push(0, 0).unwrap();
-        state.save(0, 20).unwrap();
-        state.push(1, 1).unwrap();
-        state.save(0, 30).unwrap();
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 1,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
+        vm.save(0, 10);
+        vm.push(0, 0).unwrap();
+        vm.save(0, 20);
+        vm.push(1, 1).unwrap();
+        vm.save(0, 30);
 
-        assert_eq!(state.get(0), 30);
-        assert_eq!(state.pop(), (1, 1));
-        assert_eq!(state.get(0), 20);
-        assert_eq!(state.pop(), (0, 0));
-        assert_eq!(state.get(0), 10);
+        assert_eq!(vm.get(0), 30);
+        assert_eq!(vm.pop(), (1, 1));
+        assert_eq!(vm.get(0), 20);
+        assert_eq!(vm.pop(), (0, 0));
+        assert_eq!(vm.get(0), 10);
     }
 
     #[test]
     fn state_explicit_stack() {
-        let mut state = State::new(1, 0);
-        state.stack_push(11).unwrap();
-        state.stack_push(12).unwrap();
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 1,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
+        vm.stack_push(11);
+        vm.stack_push(12);
 
-        state.push(100, 101).unwrap();
-        state.stack_push(13).unwrap();
-        assert_eq!(state.stack_pop(), 13);
-        state.stack_push(14).unwrap();
-        assert_eq!(state.pop(), (100, 101));
+        vm.push(100, 101).unwrap();
+        vm.stack_push(13);
+        assert_eq!(vm.stack_pop(), 13);
+        vm.stack_push(14);
+        assert_eq!(vm.pop(), (100, 101));
 
         // Note: 14 is not there because it was pushed as part of the backtrack branch
-        assert_eq!(state.stack_pop(), 12);
-        assert_eq!(state.stack_pop(), 11);
+        assert_eq!(vm.stack_pop(), 12);
+        assert_eq!(vm.stack_pop(), 11);
     }
 
     #[test]
     fn state_backtrack_cut_simple() {
-        let mut state = State::new(2, 0);
-        state.save(0, 1).unwrap();
-        state.save(1, 2).unwrap();
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 2,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
+        vm.save(0, 1);
+        vm.save(1, 2);
 
-        let count = state.backtrack_count();
+        let count = vm.backtrack_count();
 
-        state.push(0, 0).unwrap();
-        state.save(0, 3).unwrap();
-        assert_eq!(state.backtrack_count(), 1);
+        vm.push(0, 0).unwrap();
+        vm.save(0, 3);
+        assert_eq!(vm.backtrack_count(), 1);
 
-        state.backtrack_cut(count);
-        assert_eq!(state.backtrack_count(), 0);
-        assert_eq!(state.get(0), 3);
-        assert_eq!(state.get(1), 2);
+        vm.backtrack_cut(count);
+        assert_eq!(vm.backtrack_count(), 0);
+        assert_eq!(vm.get(0), 3);
+        assert_eq!(vm.get(1), 2);
     }
 
     #[test]
     fn state_backtrack_cut_complex() {
-        let mut state = State::new(2, 0);
-        state.save(0, 1).unwrap();
-        state.save(1, 2).unwrap();
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: 2,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
+        vm.save(0, 1);
+        vm.save(1, 2);
 
-        state.push(0, 0).unwrap();
-        state.save(0, 3).unwrap();
+        vm.push(0, 0).unwrap();
+        vm.save(0, 3);
 
-        let count = state.backtrack_count();
+        let count = vm.backtrack_count();
 
-        state.push(1, 1).unwrap();
-        state.save(0, 4).unwrap();
-        state.push(2, 2).unwrap();
-        state.save(1, 5).unwrap();
-        assert_eq!(state.backtrack_count(), 3);
+        vm.push(1, 1).unwrap();
+        vm.save(0, 4);
+        vm.push(2, 2).unwrap();
+        vm.save(1, 5);
+        assert_eq!(vm.backtrack_count(), 3);
 
-        state.backtrack_cut(count);
-        assert_eq!(state.backtrack_count(), 1);
-        assert_eq!(state.get(0), 4);
-        assert_eq!(state.get(1), 5);
+        vm.backtrack_cut(count);
+        assert_eq!(vm.backtrack_count(), 1);
+        assert_eq!(vm.get(0), 4);
+        assert_eq!(vm.get(1), 5);
 
-        state.pop();
-        assert_eq!(state.backtrack_count(), 0);
+        vm.pop();
+        assert_eq!(vm.backtrack_count(), 0);
         // Check that oldsave were set correctly
-        assert_eq!(state.get(0), 1);
-        assert_eq!(state.get(1), 2);
+        assert_eq!(vm.get(0), 1);
+        assert_eq!(vm.get(1), 2);
     }
 
     #[derive(Clone, Debug)]
@@ -1130,7 +1177,15 @@ mod tests {
         let mut stack = Vec::new();
         let mut saves = vec![usize::MAX; slots];
 
-        let mut state = State::new(slots, 0);
+        let mut vm = VM::new(
+            Prog {
+                body: Vec::new(),
+                n_saves: slots,
+            },
+            DEFAULT_MAX_STACK,
+            DEFAULT_BACKTRACK_LIMIT,
+            0,
+        );
 
         let mut expected = Vec::new();
         let mut actual = Vec::new();
@@ -1141,7 +1196,7 @@ mod tests {
                     // We're not checking pc and ix later, so don't bother
                     // putting in random values.
                     stack.push((0, 0, saves.clone()));
-                    state.push(0, 0).unwrap();
+                    vm.push(0, 0).unwrap();
                 }
                 Operation::Pop => {
                     // Note that because we generate the operations randomly
@@ -1149,12 +1204,12 @@ mod tests {
                     // if the stack was empty.
                     if let Some((_, _, previous_saves)) = stack.pop() {
                         saves = previous_saves;
-                        state.pop();
+                        vm.pop();
                     }
                 }
                 Operation::Save(slot, value) => {
                     saves[slot] = value;
-                    state.save(slot, value).unwrap();
+                    vm.save(slot, value);
                 }
             }
 
@@ -1162,7 +1217,7 @@ mod tests {
             expected.push(saves.clone());
             let mut actual_saves = vec![usize::MAX; slots];
             for i in 0..slots {
-                actual_saves[i] = state.get(i);
+                actual_saves[i] = vm.get(i);
             }
             actual.push(actual_saves);
         }
