@@ -76,10 +76,12 @@ use regex_automata::util::look::LookMatcher;
 use regex_automata::util::primitives::NonMaxUsize;
 use regex_automata::Anchored;
 use regex_automata::Input;
+use std::mem;
 use std::ops::Range;
 
 use crate::codepoint_len;
 use crate::error::RuntimeError;
+use crate::prefilter::Prefilter;
 use crate::prev_codepoint_ix;
 use crate::Assertion;
 use crate::Error;
@@ -194,6 +196,9 @@ pub enum Insn {
     ContinueFromPreviousMatchEnd,
     /// Continue only if the specified capture group has already been populated as part of the match
     BackrefExistsCondition(usize),
+    /// Prefilter to perform unanchored search
+    // Fuck Rust. We need Option here.
+    Prefilter(Option<Box<Prefilter>>),
 }
 
 /// Sequence of instructions for the VM to execute.
@@ -246,6 +251,8 @@ struct State {
     inner_slots: Vec<Option<NonMaxUsize>>,
     /// Slot mask
     slot_mask: BitSet,
+    /// Visited mask
+    visited: BitSet,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +281,7 @@ impl State {
             nsave: 0,
             inner_slots: Vec::new(),
             slot_mask: BitSet::new(),
+            visited: BitSet::new(),
         }
     }
 
@@ -285,6 +293,7 @@ impl State {
         self.nsave = 0;
         // inner_slots no need to clear, as it is cleared every time before use
         // slot_mask no need to clear, as it is cleared every time before use
+        // visited no need to clear, as it is cleared every time before use
     }
 }
 
@@ -410,7 +419,7 @@ impl VM {
             let start = end - self.state.stack[count].nsave;
             (start, end)
         };
-        self.state.slot_mask.clear();
+        reset_bitset(&mut self.state.slot_mask);
         // keep all the old saves of our branch (they're all for different slots)
         for &Save { slot, .. } in &self.state.oldsave[oldsave_start..oldsave_end] {
             self.state.slot_mask.insert(slot);
@@ -466,9 +475,107 @@ impl VM {
         Ok(r?.then_some(locations))
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub(crate) fn run_to(
         &mut self,
+        locations: &mut Vec<usize>,
+        s: &str,
+        range: Range<usize>,
+        n_groups: Option<usize>,
+    ) -> Result<bool> {
+        let prefilter = match &mut self.prog.body[0] {
+            Insn::Prefilter(prefilter_box) => prefilter_box.take().unwrap(),
+            _ => return self.run_inner(0, locations, s, range, n_groups),
+        };
+
+        let mut core = |prefilter: &Prefilter| {
+            let sb = s.as_bytes();
+
+            if !prefilter.assert(sb, &range) {
+                return Ok(false);
+            }
+
+            let Some(iter) = prefilter.search(sb, &range) else {
+                for pos in range.start..=range.end {
+                    if self.run_inner(1, locations, s, pos..range.end, n_groups)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            };
+            let safe_offset = prefilter.safe_offset().unwrap();
+
+            let mut last_success: Option<usize> = None;
+            let old_len = locations.len();
+            reset_bitset(&mut self.state.visited);
+            'outer: for m in iter {
+                let mut pos = m.position;
+
+                if let Some(last_success) = last_success {
+                    let mut cursor = last_success;
+                    for _ in safe_offset..0 {
+                        cursor = prev_codepoint_ix(s, cursor);
+                    }
+                    for _ in 0..safe_offset {
+                        if cursor >= range.end {
+                            break;
+                        }
+                        cursor += codepoint_len_at(s, cursor);
+                    }
+                    if cursor <= pos {
+                        break;
+                    }
+                }
+
+                for _ in m.offset..0 {
+                    if pos >= range.end {
+                        continue 'outer;
+                    }
+                    pos += codepoint_len_at(s, pos);
+                }
+                for _ in 0..m.offset {
+                    if pos <= range.start {
+                        continue 'outer;
+                    }
+                    pos = prev_codepoint_ix(s, pos);
+                }
+
+                if range.start <= pos
+                    && pos <= range.end
+                    && last_success.map_or(true, |last_success| pos < last_success)
+                    && self.state.visited.insert(pos)
+                {
+                    let new_range = pos..range.end;
+                    let cur_len = locations.len();
+                    if self.run_inner(1, locations, s, new_range, n_groups)? {
+                        if let Some(last_success) = last_success.as_mut() {
+                            debug_assert!(pos < *last_success);
+                            *last_success = pos;
+                            locations.drain(old_len..cur_len);
+                        } else {
+                            last_success = Some(pos);
+                            debug_assert_eq!(old_len, cur_len);
+                        }
+                    }
+                }
+            }
+
+            Ok(last_success.is_some())
+        };
+
+        let r = core(&prefilter);
+
+        match &mut self.prog.body[0] {
+            Insn::Prefilter(prefilter_box) => *prefilter_box = Some(prefilter),
+            _ => unreachable!(),
+        }
+
+        r
+    }
+
+    #[allow(clippy::cognitive_complexity)]
+    fn run_inner(
+        &mut self,
+        mut pc: usize,
         locations: &mut Vec<usize>,
         s: &str,
         range: Range<usize>,
@@ -480,7 +587,6 @@ impl VM {
         self.state.reset(self.explicit_sp());
         let look_matcher = LookMatcher::new();
         let mut backtrack_count = 0;
-        let mut pc = 0;
         let mut ix = range.start;
         assert!(range.end <= s.len(), "range out of bound");
         loop {
@@ -768,6 +874,9 @@ impl VM {
                             break 'fail;
                         }
                     }
+                    Insn::Prefilter(_) => {
+                        unreachable!("Insn::Prefile can only appear at the beginning of Prog")
+                    }
                 }
                 pc += 1;
             }
@@ -850,6 +959,12 @@ fn eq_test_exact_size<T: Copy, F: Fn(T, T) -> bool>(
         return false;
     }
     a.zip(b).all(|(a, b)| pred(a, b))
+}
+
+fn reset_bitset(set: &mut BitSet) {
+    let mut bitvec = mem::take(set).into_bit_vec();
+    bitvec.truncate(0);
+    *set = BitSet::from_bit_vec(bitvec);
 }
 
 #[cfg(not(test))]

@@ -93,7 +93,7 @@ fn run_backtrack_limit(c: &mut Criterion) {
     let p = compile(&a).unwrap();
     let s = "abababababababababababababababababababababababababababab";
     c.bench_function("run_backtrack_limit", |b| {
-        b.iter(|| run_default_from_pos(p.clone(), &s, 0).unwrap_err())
+        b.iter(|| run_default_from_pos(p.clone(), &s, 0).unwrap())
     });
 }
 

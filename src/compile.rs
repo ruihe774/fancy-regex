@@ -22,10 +22,12 @@
 
 use regex_automata::meta::Regex as RaRegex;
 use regex_automata::meta::{Builder as RaBuilder, Config as RaConfig};
+use std::borrow::Borrow;
 #[cfg(test)]
 use std::{collections::BTreeMap, sync::RwLock};
 
 use crate::analyze::Info;
+use crate::prefilter::Prefilter;
 use crate::vm::{Insn, Prog};
 use crate::CompileError;
 use crate::Error;
@@ -108,8 +110,60 @@ impl Compiler {
         }
     }
 
-    fn new_with_default_options(max_group: usize) -> Compiler {
-        Self::new(max_group, RegexOptions::default())
+    fn build(mut self, info: &Info<'_>) -> Result<Prog> {
+        if self.options.anchored {
+            self.visit(info, false)?;
+        } else if let Some(prefilter) = info.hard.then(|| Prefilter::new(info)).flatten() {
+            self.b.add(Insn::Prefilter(Some(Box::new(prefilter))));
+            self.visit(info, false)?;
+        } else {
+            let any = Expr::Any { newline: true };
+            let repeat = Expr::Repeat {
+                child: Box::new(any),
+                lo: 0,
+                hi: usize::MAX,
+                greedy: false,
+            };
+            let any_ref = match &repeat {
+                Expr::Repeat { child, .. } => child.as_ref(),
+                _ => unreachable!(),
+            };
+            let repeat_ref = &repeat;
+            let prefix = Info {
+                start_group: 0,
+                end_group: 0,
+                min_size: 0,
+                const_size: false,
+                literal_segment: false,
+                must_exist: true,
+                longest_positive_lookahead: 0,
+                longest_positive_lookbehind: 0,
+                has_continue: false,
+                offset: 0,
+                hard: false,
+                expr: repeat_ref,
+                children: vec![Info {
+                    start_group: 0,
+                    end_group: 0,
+                    min_size: 1,
+                    const_size: true,
+                    literal_segment: false,
+                    must_exist: false,
+                    longest_positive_lookahead: 0,
+                    longest_positive_lookbehind: 0,
+                    has_continue: false,
+                    offset: 0,
+                    hard: false,
+                    expr: any_ref,
+                    children: Vec::new(),
+                }],
+            };
+            // offsets in info are incorrect now
+            // however we do not use them in this case
+            self.compile_concat(&[&prefix, info], false)?;
+        }
+        self.b.add(Insn::End);
+        Ok(self.b.build())
     }
 
     fn visit(&mut self, info: &Info<'_>, hard: bool) -> Result<()> {
@@ -132,7 +186,7 @@ impl Compiler {
                 self.b.add(Insn::AnyNoNL);
             }
             Expr::Concat(_) => {
-                self.compile_concat(info, hard)?;
+                self.compile_concat(&info.children, hard)?;
             }
             Expr::Alt(_) => {
                 let count = info.children.len();
@@ -254,39 +308,45 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_concat(&mut self, info: &Info<'_>, hard: bool) -> Result<()> {
+    fn compile_concat<'a, I: Borrow<Info<'a>>>(
+        &mut self,
+        children: &[I],
+        hard: bool,
+    ) -> Result<()> {
         // First: determine a prefix which is constant size and not hard.
-        let prefix_end = info
-            .children
+        let prefix_end = children
             .iter()
+            .map(Borrow::borrow)
             .take_while(|c| c.const_size && !c.hard)
             .count();
 
         // If incoming difficulty is not hard, the suffix after the last
         // hard child can be done with NFA.
         let suffix_len = if !hard {
-            info.children[prefix_end..]
+            children[prefix_end..]
                 .iter()
                 .rev()
+                .map(Borrow::borrow)
                 .take_while(|c| !c.hard)
                 .count()
         } else {
             // Even for hard, we can delegate a const-sized suffix
-            info.children[prefix_end..]
+            children[prefix_end..]
                 .iter()
                 .rev()
+                .map(Borrow::borrow)
                 .take_while(|c| c.const_size && !c.hard)
                 .count()
         };
-        let suffix_begin = info.children.len() - suffix_len;
+        let suffix_begin = children.len() - suffix_len;
 
-        self.compile_delegates(&info.children[..prefix_end])?;
+        self.compile_delegates(&children[..prefix_end])?;
 
-        for child in info.children[prefix_end..suffix_begin].iter() {
-            self.visit(child, true)?;
+        for child in children[prefix_end..suffix_begin].iter() {
+            self.visit(child.borrow(), true)?;
         }
 
-        self.compile_delegates(&info.children[suffix_begin..])
+        self.compile_delegates(&children[suffix_begin..])
     }
 
     fn compile_repeat(
@@ -448,18 +508,20 @@ impl Compiler {
         self.visit(inner, false)
     }
 
-    fn compile_delegates(&mut self, infos: &[Info<'_>]) -> Result<()> {
+    fn compile_delegates<'a, I: Borrow<Info<'a>>>(&mut self, infos: &[I]) -> Result<()> {
         if infos.is_empty() {
             return Ok(());
         }
 
         if infos
             .iter()
+            .map(Borrow::borrow)
             .all(|info| matches!(info.expr, Expr::Literal { .. }))
         {
             // Parser::optimize() will fold literals, so infos.len() is usually 1.
             // Or the user has modified expr tree by themselves.
             for info in infos {
+                let info = info.borrow();
                 let Expr::Literal { val, casei } = info.expr else {
                     unreachable!()
                 };
@@ -473,7 +535,7 @@ impl Compiler {
 
         let mut delegate_builder = DelegateBuilder::new();
         for info in infos {
-            delegate_builder = delegate_builder.push(info);
+            delegate_builder = delegate_builder.push(info.borrow());
         }
         let delegate = delegate_builder.build(&self.options)?;
 
@@ -526,17 +588,12 @@ pub(crate) fn compile_inner(
 
 /// Compile the analyzed expressions into a program.
 pub fn compile(info: &Info<'_>) -> Result<Prog> {
-    let mut c = Compiler::new_with_default_options(info.end_group);
-    c.visit(info, false)?;
-    c.b.add(Insn::End);
-    Ok(c.b.build())
+    compile_with_options(info, RegexOptions::default())
 }
 
 pub(crate) fn compile_with_options(info: &Info<'_>, options: RegexOptions) -> Result<Prog> {
-    let mut c = Compiler::new(info.end_group, options);
-    c.visit(info, false)?;
-    c.b.add(Insn::End);
-    Ok(c.b.build())
+    let c = Compiler::new(info.end_group, options);
+    c.build(info)
 }
 
 struct DelegateBuilder<'a> {

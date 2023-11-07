@@ -1277,7 +1277,10 @@ impl<'a> Parser<'a> {
                         .map(recur)
                         .flat_map(|child| match child {
                             // flatten alt in alt
-                            Expr::Alt(descents) if !descents.is_empty() => mark_change!(descents),
+                            Expr::Alt(descents) => {
+                                debug_assert!(!descents.is_empty());
+                                mark_change!(descents)
+                            }
                             // eliminate empty literal
                             Expr::Literal { val, .. } if val.is_empty() => {
                                 mark_change!(vec![Expr::Empty])

@@ -172,6 +172,7 @@ mod compile;
 mod error;
 mod expand;
 mod parse;
+mod prefilter;
 mod replacer;
 mod vm;
 
@@ -403,6 +404,7 @@ enum RegexSource {
 
 #[derive(Copy, Clone, Debug)]
 struct RegexOptions {
+    anchored: bool,
     max_stack: usize,
     backtrack_limit: usize,
     delegate_size_limit: Option<usize>,
@@ -412,6 +414,7 @@ struct RegexOptions {
 impl Default for RegexOptions {
     fn default() -> Self {
         RegexOptions {
+            anchored: false,
             max_stack: DEFAULT_MAX_STACK,
             backtrack_limit: DEFAULT_BACKTRACK_LIMIT,
             delegate_size_limit: None,
@@ -503,34 +506,19 @@ impl Regex {
             RegexSource::ExprTree(tree) => (tree, None),
         };
 
-        // wrapper to search for re at arbitrary start position,
-        // and to capture the match bounds
         let tree = ExprTree {
-            expr: Expr::Concat(vec![
-                Expr::Repeat {
-                    child: Box::new(Expr::Any { newline: true }),
-                    lo: 0,
-                    hi: usize::MAX,
-                    greedy: false,
-                },
-                Expr::Group(Box::new(raw_tree.expr)),
-            ]),
+            expr: Expr::Group(Box::new(raw_tree.expr)),
             ..raw_tree
         };
 
         let info = analyze(&tree)?;
-        debug_assert_eq!(info.hard, info.children[1].children[0].hard);
-
         let prog = compile_with_options(&info, options)?;
         let n_groups = info.end_group;
         let vm = VM::new(prog, options.max_stack, options.backtrack_limit, 0);
 
         let raw_tree = ExprTree {
             expr: match tree.expr {
-                Expr::Concat(children) => match children.into_iter().last() {
-                    Some(Expr::Group(raw_expr)) => *raw_expr,
-                    _ => unreachable!(),
-                },
+                Expr::Group(raw_expr) => *raw_expr,
                 _ => unreachable!(),
             },
             ..tree
