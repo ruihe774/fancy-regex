@@ -1153,8 +1153,9 @@ impl<'r> Iterator for CaptureNames<'r> {
 }
 
 // precondition: ix > 0
-fn prev_codepoint_ix(s: &str, mut ix: usize) -> usize {
-    let bytes = s.as_bytes();
+#[inline]
+fn prev_codepoint_ix(s: impl AsRef<[u8]>, mut ix: usize) -> usize {
+    let bytes = s.as_ref();
     loop {
         ix -= 1;
         // fancy bit magic for ranges 0..0x80 + 0xc0..
@@ -1165,6 +1166,7 @@ fn prev_codepoint_ix(s: &str, mut ix: usize) -> usize {
     ix
 }
 
+#[inline]
 fn codepoint_len(b: u8) -> usize {
     match b {
         b if b < 0x80 => 1,
@@ -1177,6 +1179,7 @@ fn codepoint_len(b: u8) -> usize {
 /// Returns the smallest possible index of the next valid UTF-8 sequence
 /// starting after `i`.
 /// Adapted from a function with the same name in the `regex` crate.
+#[inline]
 fn next_utf8(text: &str, i: usize) -> usize {
     let b = match text.as_bytes().get(i) {
         None => return i + 1,

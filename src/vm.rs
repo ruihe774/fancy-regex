@@ -76,6 +76,7 @@ use regex_automata::util::look::LookMatcher;
 use regex_automata::util::primitives::NonMaxUsize;
 use regex_automata::Anchored;
 use regex_automata::Input;
+use std::fmt;
 use std::mem;
 use std::ops::Range;
 
@@ -106,9 +107,10 @@ pub enum Insn {
     /// Successful end of program
     End,
     /// Match any character (including newline)
-    Any,
-    /// Match any character (not including newline)
-    AnyNoNL,
+    Any {
+        /// Whether to match newline (\n)
+        newline: bool,
+    },
     /// Assertions
     Assertion(Assertion),
     /// Match the literal string at the current index
@@ -117,7 +119,7 @@ pub enum Insn {
         val: CompactString,
         /// Case insensitive
         casei: bool,
-    }, // should be cow?
+    },
     /// Split execution into two threads. The two fields are positions of instructions. Execution
     /// first tries the first thread. If that fails, the second position is tried.
     Split(usize, usize),
@@ -129,8 +131,8 @@ pub enum Insn {
     Save0(usize),
     /// Set the string index to the value that was saved in the specified slot
     Restore(usize),
-    /// Repeat greedily (match as much as possible)
-    RepeatGr {
+    /// Repeat
+    Repeat {
         /// Minimum number of matches
         lo: usize,
         /// Maximum number of matches
@@ -139,20 +141,11 @@ pub enum Insn {
         next: usize,
         /// The slot for keeping track of the number of repetitions
         repeat: usize,
+        /// Greedy (match as much as possible)
+        greedy: bool,
     },
-    /// Repeat non-greedily (prefer matching as little as possible)
-    RepeatNg {
-        /// Minimum number of matches
-        lo: usize,
-        /// Maximum number of matches
-        hi: usize,
-        /// The instruction after the repeat
-        next: usize,
-        /// The slot for keeping track of the number of repetitions
-        repeat: usize,
-    },
-    /// Repeat greedily and prevent infinite loops from empty matches
-    RepeatEpsilonGr {
+    /// Repeat and prevent infinite loops from empty matches
+    RepeatEpsilon {
         /// Minimum number of matches
         lo: usize,
         /// The instruction after the repeat
@@ -161,17 +154,8 @@ pub enum Insn {
         repeat: usize,
         /// The slot for saving the previous IX to check if we had an empty match
         check: usize,
-    },
-    /// Repeat non-greedily and prevent infinite loops from empty matches
-    RepeatEpsilonNg {
-        /// Minimum number of matches
-        lo: usize,
-        /// The instruction after the repeat
-        next: usize,
-        /// The slot for keeping track of the number of repetitions
-        repeat: usize,
-        /// The slot for saving the previous IX to check if we had an empty match
-        check: usize,
+        /// Greedy (match as much as possible)
+        greedy: bool,
     },
     /// Negative look-around failed
     FailNegativeLookAround,
@@ -363,9 +347,7 @@ impl VM {
         self.state.nsave += 1;
         self.state.saves[slot] = val;
 
-        if self.options & OPTION_TRACE != 0 {
-            println!("saves: {:?}", self.state.saves);
-        }
+        self.trace(format_args!("saves: {:?}", self.state.saves));
     }
 
     fn get(&self, slot: usize) -> usize {
@@ -445,11 +427,25 @@ impl VM {
         self.state.nsave = oldsave_ix - oldsave_start;
     }
 
-    #[inline]
     fn trace_stack(&self, operation: &str) {
+        self.trace(format_args!(
+            "stack after {}: {:?}",
+            operation, self.state.stack
+        ))
+    }
+
+    fn trace(&self, args: fmt::Arguments) {
+        #[cfg(debug_assertions)]
         if self.options & OPTION_TRACE != 0 {
-            println!("stack after {}: {:?}", operation, self.state.stack);
+            Self::do_trace(args);
         }
+        let _ = args;
+    }
+
+    #[cold]
+    #[cfg(debug_assertions)]
+    fn do_trace(args: fmt::Arguments) {
+        eprintln!("{}", args);
     }
 
     pub(crate) fn run(
@@ -585,29 +581,24 @@ impl VM {
         range: Range<usize>,
         n_groups: Option<usize>,
     ) -> Result<bool> {
-        if self.options & OPTION_TRACE != 0 {
-            println!("pos\tinstruction");
-        }
+        self.trace(format_args!("pos\tinstruction"));
         self.state.reset(self.explicit_sp());
         let look_matcher = LookMatcher::new();
         let mut backtrack_count = 0;
         let mut ix = range.start;
-        assert!(range.end <= s.len(), "range out of bound");
+        let sb = s.as_bytes();
+        assert!(range.end <= sb.len(), "range out of bound");
         loop {
             // break from this loop to fail, causes stack to pop
             'fail: loop {
-                if self.options & OPTION_TRACE != 0 {
-                    println!("{}\t{} {:?}", ix, pc, self.prog.body[pc]);
-                }
+                self.trace(format_args!("{}\t{} {:?}", ix, pc, self.prog.body[pc]));
                 match self.prog.body[pc] {
                     Insn::End => {
                         // save of end position into slot 1 is now done
                         // with an explicit group; we might want to
                         // optimize that.
                         //state.saves[1] = ix;
-                        if self.options & OPTION_TRACE != 0 {
-                            println!("saves: {:?}", self.state.saves);
-                        }
+                        self.trace(format_args!("saves: {:?}", self.state.saves));
                         if let Some(&slot1) = self.state.saves.get(1) {
                             // With some features like keep out (\K), the match start can be after
                             // the match end. Cap the start to <= end.
@@ -622,55 +613,44 @@ impl VM {
                         };
                         return Ok(true);
                     }
-                    Insn::Any => {
-                        if ix < range.end {
-                            ix += codepoint_len_at(s, ix);
-                        } else {
-                            break 'fail;
-                        }
-                    }
-                    Insn::AnyNoNL => {
-                        if ix < range.end && s.as_bytes()[ix] != b'\n' {
-                            ix += codepoint_len_at(s, ix);
+                    Insn::Any { newline } => {
+                        if ix < range.end && (newline || sb[ix] != b'\n') {
+                            ix += codepoint_len_at(sb, ix);
                         } else {
                             break 'fail;
                         }
                     }
                     Insn::Assertion(assertion) => {
                         if !match assertion {
-                            Assertion::StartText => look_matcher.is_start(s.as_bytes(), ix),
-                            Assertion::EndText => look_matcher.is_end(s.as_bytes(), ix),
+                            Assertion::StartText => look_matcher.is_start(sb, ix),
+                            Assertion::EndText => look_matcher.is_end(sb, ix),
                             Assertion::StartLine { crlf: false } => {
-                                look_matcher.is_start_lf(s.as_bytes(), ix)
+                                look_matcher.is_start_lf(sb, ix)
                             }
                             Assertion::StartLine { crlf: true } => {
-                                look_matcher.is_start_crlf(s.as_bytes(), ix)
+                                look_matcher.is_start_crlf(sb, ix)
                             }
-                            Assertion::EndLine { crlf: false } => {
-                                look_matcher.is_end_lf(s.as_bytes(), ix)
+                            Assertion::EndLine { crlf: false } => look_matcher.is_end_lf(sb, ix),
+                            Assertion::EndLine { crlf: true } => look_matcher.is_end_crlf(sb, ix),
+                            Assertion::LeftWordBoundary => {
+                                look_matcher.is_word_start_unicode(sb, ix).unwrap()
                             }
-                            Assertion::EndLine { crlf: true } => {
-                                look_matcher.is_end_crlf(s.as_bytes(), ix)
-                            }
-                            Assertion::LeftWordBoundary => look_matcher
-                                .is_word_start_unicode(s.as_bytes(), ix)
-                                .unwrap(),
                             Assertion::RightWordBoundary => {
-                                look_matcher.is_word_end_unicode(s.as_bytes(), ix).unwrap()
+                                look_matcher.is_word_end_unicode(sb, ix).unwrap()
                             }
                             Assertion::WordBoundary => {
-                                look_matcher.is_word_unicode(s.as_bytes(), ix).unwrap()
+                                look_matcher.is_word_unicode(sb, ix).unwrap()
                             }
-                            Assertion::NotWordBoundary => look_matcher
-                                .is_word_unicode_negate(s.as_bytes(), ix)
-                                .unwrap(),
+                            Assertion::NotWordBoundary => {
+                                look_matcher.is_word_unicode_negate(sb, ix).unwrap()
+                            }
                         } {
                             break 'fail;
                         }
                     }
                     Insn::Lit { ref val, casei } => {
                         let end = ix.saturating_add(val.len()).min(range.end);
-                        let sb = &s.as_bytes()[ix..end];
+                        let sb = &sb[ix..end];
                         if !casei {
                             if sb != val.as_bytes() {
                                 break 'fail;
@@ -705,11 +685,12 @@ impl VM {
                     Insn::Save(slot) => self.save(slot, ix),
                     Insn::Save0(slot) => self.save(slot, 0),
                     Insn::Restore(slot) => ix = self.get(slot),
-                    Insn::RepeatGr {
+                    Insn::Repeat {
                         lo,
                         hi,
                         next,
                         repeat,
+                        greedy,
                     } => {
                         let repcount = self.get(repeat);
                         if repcount == hi {
@@ -719,31 +700,18 @@ impl VM {
                         self.save(repeat, repcount + 1);
                         if repcount >= lo {
                             self.push(next, ix)?;
+                            if !greedy {
+                                pc = next;
+                                continue;
+                            }
                         }
                     }
-                    Insn::RepeatNg {
-                        lo,
-                        hi,
-                        next,
-                        repeat,
-                    } => {
-                        let repcount = self.get(repeat);
-                        if repcount == hi {
-                            pc = next;
-                            continue;
-                        }
-                        self.save(repeat, repcount + 1);
-                        if repcount >= lo {
-                            self.push(pc + 1, ix)?;
-                            pc = next;
-                            continue;
-                        }
-                    }
-                    Insn::RepeatEpsilonGr {
+                    Insn::RepeatEpsilon {
                         lo,
                         next,
                         repeat,
                         check,
+                        greedy,
                     } => {
                         let repcount = self.get(repeat);
                         if repcount > lo && self.get(check) == ix {
@@ -754,25 +722,10 @@ impl VM {
                         if repcount >= lo {
                             self.save(check, ix);
                             self.push(next, ix)?;
-                        }
-                    }
-                    Insn::RepeatEpsilonNg {
-                        lo,
-                        next,
-                        repeat,
-                        check,
-                    } => {
-                        let repcount = self.get(repeat);
-                        if repcount > lo && self.get(check) == ix {
-                            // prevent zero-length match on repeat
-                            break 'fail;
-                        }
-                        self.save(repeat, repcount + 1);
-                        if repcount >= lo {
-                            self.save(check, ix);
-                            self.push(pc + 1, ix)?;
-                            pc = next;
-                            continue;
+                            if !greedy {
+                                pc = next;
+                                continue;
+                            }
                         }
                     }
                     Insn::GoBack(count) => {
@@ -780,7 +733,7 @@ impl VM {
                             if ix == 0 {
                                 break 'fail;
                             }
-                            ix = prev_codepoint_ix(s, ix);
+                            ix = prev_codepoint_ix(sb, ix);
                         }
                     }
                     Insn::FailNegativeLookAround => {
@@ -803,19 +756,15 @@ impl VM {
                     }
                     Insn::Backref(slot) => {
                         let lo = self.get(slot);
-                        if lo == usize::MAX {
-                            // Referenced group hasn't matched, so the backref doesn't match either
-                            break 'fail;
-                        }
                         let hi = self.get(slot + 1);
-                        if hi == usize::MAX {
+                        if lo == usize::MAX || hi == usize::MAX {
                             // Referenced group hasn't matched, so the backref doesn't match either
                             break 'fail;
                         }
-                        let ref_text = &s[lo..hi];
+                        let ref_text = &sb[lo..hi];
                         let end = ix.saturating_add(ref_text.len()).min(range.end);
-                        let sb = &s.as_bytes()[ix..end];
-                        if sb != ref_text.as_bytes() {
+                        let sb = &sb[ix..end];
+                        if sb != ref_text {
                             break 'fail;
                         }
                         ix = end;
@@ -894,9 +843,7 @@ impl VM {
                 }
                 pc += 1;
             }
-            if self.options & OPTION_TRACE != 0 {
-                println!("fail");
-            }
+            self.trace(format_args!("fail"));
             // "break 'fail" goes here
             if self.state.stack.is_empty() {
                 return Ok(false);
@@ -912,10 +859,6 @@ impl VM {
             ix = newix;
         }
     }
-}
-
-fn codepoint_len_at(s: &str, ix: usize) -> usize {
-    codepoint_len(s.as_bytes()[ix])
 }
 
 /// Run the program with trace printing for debugging.
@@ -946,6 +889,11 @@ pub fn run_trace_from_pos(prog: Prog, s: &str, pos: usize) -> Result<Option<Vec<
 #[doc(hidden)]
 pub fn run_default_from_pos(prog: Prog, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
     run_default(prog, s, pos..s.len())
+}
+
+#[inline]
+fn codepoint_len_at(s: impl AsRef<[u8]>, ix: usize) -> usize {
+    codepoint_len(s.as_ref()[ix])
 }
 
 #[inline]

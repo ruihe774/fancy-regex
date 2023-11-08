@@ -89,10 +89,9 @@ impl VMBuilder {
 
     fn set_repeat_target(&mut self, repeat_pc: usize, target: usize) {
         match self.prog[repeat_pc] {
-            Insn::RepeatGr { ref mut next, .. }
-            | Insn::RepeatNg { ref mut next, .. }
-            | Insn::RepeatEpsilonGr { ref mut next, .. }
-            | Insn::RepeatEpsilonNg { ref mut next, .. } => *next = target,
+            Insn::Repeat { ref mut next, .. } | Insn::RepeatEpsilon { ref mut next, .. } => {
+                *next = target
+            }
             _ => panic!("mutating instruction other than Repeat"),
         }
     }
@@ -180,11 +179,8 @@ impl Compiler {
                     casei,
                 });
             }
-            Expr::Any { newline: true } => {
-                self.b.add(Insn::Any);
-            }
-            Expr::Any { newline: false } => {
-                self.b.add(Insn::AnyNoNL);
+            Expr::Any { newline } => {
+                self.b.add(Insn::Any { newline });
             }
             Expr::Concat(_) => {
                 self.compile_concat(&info.children, hard)?;
@@ -378,21 +374,13 @@ impl Compiler {
             let check = self.b.newsave();
             self.b.add(Insn::Save0(repeat));
             let pc = self.b.pc();
-            if greedy {
-                self.b.add(Insn::RepeatEpsilonGr {
-                    lo,
-                    next: usize::MAX,
-                    repeat,
-                    check,
-                });
-            } else {
-                self.b.add(Insn::RepeatEpsilonNg {
-                    lo,
-                    next: usize::MAX,
-                    repeat,
-                    check,
-                });
-            }
+            self.b.add(Insn::RepeatEpsilon {
+                lo,
+                next: usize::MAX,
+                repeat,
+                check,
+                greedy,
+            });
             self.visit(child, hard)?;
             self.b.add(Insn::Jmp(pc));
             let next_pc = self.b.pc();
@@ -416,21 +404,13 @@ impl Compiler {
             let repeat = self.b.newsave();
             self.b.add(Insn::Save0(repeat));
             let pc = self.b.pc();
-            if greedy {
-                self.b.add(Insn::RepeatGr {
-                    lo,
-                    hi,
-                    next: usize::MAX,
-                    repeat,
-                });
-            } else {
-                self.b.add(Insn::RepeatNg {
-                    lo,
-                    hi,
-                    next: usize::MAX,
-                    repeat,
-                });
-            }
+            self.b.add(Insn::Repeat {
+                lo,
+                hi,
+                next: usize::MAX,
+                repeat,
+                greedy,
+            });
             self.visit(child, hard)?;
             self.b.add(Insn::Jmp(pc));
             let next_pc = self.b.pc();
