@@ -62,7 +62,7 @@ pub struct ReplacerRef<'a, R: ?Sized>(&'a mut R);
 
 impl<'a, R: Replacer + ?Sized + 'a> Replacer for ReplacerRef<'a, R> {
     fn replace_append(&mut self, caps: &Captures<'_, '_>, dst: &mut String) {
-        self.0.replace_append(caps, dst)
+        self.0.replace_append(caps, dst);
     }
     fn no_expansion(&mut self) -> Option<Cow<'_, str>> {
         self.0.no_expansion()
@@ -81,7 +81,7 @@ impl<'a> Replacer for &'a str {
 
 impl<'a> Replacer for &'a String {
     fn replace_append(&mut self, caps: &Captures<'_, '_>, dst: &mut String) {
-        self.as_str().replace_append(caps, dst)
+        self.as_str().replace_append(caps, dst);
     }
 
     fn no_expansion(&mut self) -> Option<Cow<'_, str>> {
@@ -91,7 +91,7 @@ impl<'a> Replacer for &'a String {
 
 impl Replacer for String {
     fn replace_append(&mut self, caps: &Captures<'_, '_>, dst: &mut String) {
-        self.as_str().replace_append(caps, dst)
+        self.as_str().replace_append(caps, dst);
     }
 
     fn no_expansion(&mut self) -> Option<Cow<'_, str>> {
@@ -101,7 +101,7 @@ impl Replacer for String {
 
 impl<'a> Replacer for Cow<'a, str> {
     fn replace_append(&mut self, caps: &Captures<'_, '_>, dst: &mut String) {
-        self.as_ref().replace_append(caps, dst)
+        self.as_ref().replace_append(caps, dst);
     }
 
     fn no_expansion(&mut self) -> Option<Cow<'_, str>> {
@@ -111,7 +111,7 @@ impl<'a> Replacer for Cow<'a, str> {
 
 impl<'a> Replacer for &'a Cow<'a, str> {
     fn replace_append(&mut self, caps: &Captures<'_, '_>, dst: &mut String) {
-        self.as_ref().replace_append(caps, dst)
+        self.as_ref().replace_append(caps, dst);
     }
 
     fn no_expansion(&mut self) -> Option<Cow<'_, str>> {

@@ -1,7 +1,8 @@
-use std::ops::Range;
+#![allow(missing_docs)] // I havn't write it yet
 
-#[allow(missing_docs)] // I havn't write it yet
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, MatchKind, StartKind};
+use std::mem;
+use std::ops::Range;
 
 use crate::{analyze::Info, Expr, LookAround};
 
@@ -28,6 +29,9 @@ pub struct Prefilter {
 
 impl Prefilter {
     pub fn new(info: &Info<'_>) -> Option<Self> {
+        // it will be insane to build a DFA with too many patterns
+        const MAX_FRAG: usize = mem::size_of::<usize>() * 8;
+
         if info.has_continue {
             // XXX: we cannot handle it
             return None;
@@ -36,8 +40,6 @@ impl Prefilter {
         let mut seq = Vec::new();
         extract_literals(info, &mut seq, false);
 
-        // it will be insane to build a DFA with too many patterns
-        const MAX_FRAG: usize = std::mem::size_of::<usize>() * 8;
         let mut builder = AhoCorasickBuilder::new();
         builder.kind(Some(AhoCorasickKind::DFA));
         builder.start_kind(StartKind::Unanchored);
@@ -49,9 +51,11 @@ impl Prefilter {
             // put fragments with large offset at the back
             prefixes.sort_by_key(|frag| {
                 (
-                    (frag.offset == isize::MIN)
-                        .then_some(isize::MAX)
-                        .unwrap_or(frag.offset),
+                    if frag.offset == isize::MIN {
+                        isize::MAX
+                    } else {
+                        frag.offset
+                    },
                     frag.val,
                 )
             });
@@ -236,7 +240,7 @@ fn extract_literals<'a>(info: &Info<'a>, seq: &mut Vec<Fragment<'a>>, all: bool)
             if (all || info.must_exist) && info.literal_segment {
                 debug_assert_ne!(info.min_size, 0);
                 seq.push(Fragment {
-                    val: &val,
+                    val,
                     size: info.min_size, // it's size in chars
                     offset: info.offset,
                     casei: *casei,
@@ -259,9 +263,7 @@ fn extract_literals<'a>(info: &Info<'a>, seq: &mut Vec<Fragment<'a>>, all: bool)
             debug_assert_eq!(info.children.len(), 1);
             extract_literals(&info.children[0], seq, all);
         }
-        Expr::LookAround(_, look)
-            if matches!(look, LookAround::LookAhead | LookAround::LookBehind) =>
-        {
+        Expr::LookAround(_, LookAround::LookAhead | LookAround::LookBehind) => {
             debug_assert_eq!(info.children.len(), 1);
             extract_literals(
                 &info.children[0],
@@ -315,7 +317,7 @@ mod test {
         extract_literals(&info, &mut seq, false);
 
         assert_eq!(
-            format!("{:?}", seq),
+            format!("{seq:?}"),
             format!(
                 r#"[Fragment {{ val: "The ", size: 4, offset: -4, casei: false, must: true }}, Fragment {{ val: "fast", size: 4, offset: 0, casei: false, must: false }}, Fragment {{ val: "slow", size: 4, offset: 0, casei: false, must: false }}, Fragment {{ val: " fox ", size: 5, offset: 4, casei: false, must: true }}, Fragment {{ val: "jumps", size: 5, offset: 9, casei: false, must: false }}, Fragment {{ val: "runs", size: 4, offset: 9, casei: false, must: false }}, Fragment {{ val: " over the ", size: 10, offset: {max}, casei: false, must: true }}, Fragment {{ val: " dog", size: 4, offset: {max}, casei: false, must: true }}, Fragment {{ val: ".", size: 1, offset: {max}, casei: false, must: true }}]"#,
                 max = isize::MAX

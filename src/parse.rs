@@ -167,7 +167,7 @@ pub enum Assertion {
 }
 
 impl Assertion {
-    pub(crate) fn is_hard(&self) -> bool {
+    pub(crate) fn is_hard(self) -> bool {
         use Assertion::*;
         matches!(
             self,
@@ -178,12 +178,20 @@ impl Assertion {
 }
 
 impl Expr {
+    fn is_repeatable(&self) -> bool {
+        !matches!(
+            self,
+            Expr::LookAround(_, _) | Expr::Empty | Expr::Assertion(_)
+        )
+    }
+
     /// Parse the regex and return an expression (AST) and a bit set with the indexes of groups
     /// that are referenced by backrefs.
     pub fn parse_tree(re: &str) -> Result<ExprTree> {
         ExprTree::parse(re)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn to_ast(&self, capture_index: &mut u32) -> Result<regex_syntax::ast::Ast> {
         use regex_syntax::ast::*;
         // XXX: implement span?
@@ -442,7 +450,7 @@ impl<'a> Parser<'a> {
     fn new(re: &str) -> Parser<'_> {
         Parser {
             re,
-            named_groups: Default::default(),
+            named_groups: BTreeMap::new(),
             numeric_backrefs: false,
             flags: FLAG_UNICODE,
             curr_group: 0,
@@ -512,7 +520,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => return Ok((ix, child)),
             };
-            if !self.is_repeatable(&child) {
+            if !child.is_repeatable() {
                 return Err(Error::ParseError(ix, ParseError::TargetNotRepeatable));
             }
             ix += 1;
@@ -536,13 +544,6 @@ impl<'a> Parser<'a> {
             return Ok((ix, node));
         }
         Ok((ix, child))
-    }
-
-    fn is_repeatable(&self, child: &Expr) -> bool {
-        !matches!(
-            child,
-            Expr::LookAround(_, _) | Expr::Empty | Expr::Assertion(_)
-        )
     }
 
     // ix, lo, hi
@@ -644,10 +645,14 @@ impl<'a> Parser<'a> {
                 Some(*group)
             } else if let Ok(group) = id.parse::<isize>() {
                 match group.cmp(&0) {
-                    Ordering::Greater => Some(group as usize),
+                    Ordering::Greater => {
+                        #[allow(clippy::cast_sign_loss)] // group > 0
+                        Some(group as usize)
+                    }
                     Ordering::Equal => {
-                        return Err(Error::ParseError(ix, ParseError::InvalidBackref))
-                    } // XXX
+                        // XXX
+                        return Err(Error::ParseError(ix, ParseError::InvalidBackref));
+                    }
                     Ordering::Less => self.curr_group.checked_add_signed(group + 1),
                 }
             } else {
@@ -679,6 +684,7 @@ impl<'a> Parser<'a> {
     }
 
     // ix points to \ character
+    #[allow(clippy::too_many_lines)]
     fn parse_escape(&mut self, ix: usize, in_class: bool) -> Result<(usize, Expr)> {
         let bytes = self.re.as_bytes();
         let Some(b) = bytes.get(ix + 1).copied() else {
@@ -798,7 +804,7 @@ impl<'a> Parser<'a> {
                         if cfg!(debug_assertions) && b.is_ascii_alphanumeric() {
                             return Err(Error::ParseError(
                                 ix,
-                                ParseError::InvalidEscape(format!("\\{}", s)),
+                                ParseError::InvalidEscape(format!("\\{s}")),
                             ));
                         } else {
                             s
@@ -1003,14 +1009,13 @@ impl<'a> Parser<'a> {
 
     // ix points to `?` in `(?`
     fn parse_flags(&mut self, ix: usize, depth: usize) -> Result<(usize, Expr)> {
-        let start = ix + 1;
-
         fn unknown_flag(re: &str, start: usize, end: usize) -> Error {
             let after_end = end + codepoint_len(re.as_bytes()[end]);
             let s = format!("(?{}", &re[start..after_end]);
             Error::ParseError(start, ParseError::UnknownFlag(s))
         }
 
+        let start = ix + 1;
         let mut ix = start;
         let mut neg = false;
         let oldflags = self.flags;
@@ -1181,9 +1186,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[allow(clippy::unused_self)] // to be consistent. And we may use self in the furthre
     fn optimize(&self, mut expr: Expr) -> Expr {
         loop {
-            let (new_expr, changed) = Self::optimize_expr_pass(expr);
+            let (new_expr, changed) = self.optimize_expr_pass(expr);
             expr = new_expr;
             if !changed {
                 break expr;
@@ -1191,7 +1197,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn optimize_expr_pass(expr: Expr) -> (Expr, bool) {
+    #[allow(clippy::only_used_in_recursion)]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::unused_self)]
+    fn optimize_expr_pass(&self, expr: Expr) -> (Expr, bool) {
         let changed = AtomicBool::new(false); // fuck Rust
         macro_rules! mark_change {
             ($expr:expr) => {{
@@ -1200,7 +1209,7 @@ impl<'a> Parser<'a> {
             }};
         }
         let recur = |expr| {
-            let (expr, subchanged) = Self::optimize_expr_pass(expr);
+            let (expr, subchanged) = self.optimize_expr_pass(expr);
             changed.fetch_or(subchanged, MemOrdering::Relaxed);
             expr
         };
@@ -1302,7 +1311,7 @@ impl<'a> Parser<'a> {
                                     [val].iter().cycle().take(lo).fold(
                                         CompactString::with_capacity(len),
                                         |mut acc, item| {
-                                            acc.push_str(&item);
+                                            acc.push_str(item);
                                             acc
                                         },
                                     )

@@ -50,6 +50,7 @@ impl Expander {
     /// group 10 and not capture group 1 followed by a literal 0.
     ///
     /// To write a literal `\`, use `\\`.
+    #[must_use]
     pub fn python() -> Expander {
         Expander {
             sub_char: '\\',
@@ -108,6 +109,7 @@ impl Expander {
     ///     "Has a literal $$ sign.",
     /// );
     /// ```
+    #[must_use]
     pub fn escape<'a>(&self, text: &'a str) -> Cow<'a, str> {
         if text.contains(self.sub_char) {
             let mut quoted = String::with_capacity(self.sub_char.len_utf8() * 2);
@@ -121,12 +123,14 @@ impl Expander {
 
     #[doc(hidden)]
     #[deprecated(since = "0.4.0", note = "Use `escape` instead.")]
+    #[must_use]
     pub fn quote<'a>(&self, text: &'a str) -> Cow<'a, str> {
         self.escape(text)
     }
 
     /// Expands the template string `template` using the syntax defined
     /// by this expander and the values of capture groups from `captures`.
+    #[must_use]
     pub fn expansion(&self, template: &str, captures: &Captures<'_, '_>) -> String {
         let mut cursor = io::Cursor::new(Vec::with_capacity(template.len()));
         self.write_expansion(&mut cursor, template, captures)
@@ -154,7 +158,7 @@ impl Expander {
         captures: &Captures<'_, '_>,
     ) -> io::Result<()> {
         self.exec(template, |step| match step {
-            Step::Char(c) => write!(dst, "{}", c),
+            Step::Char(c) => write!(dst, "{c}"),
             Step::GroupName(name) => {
                 if let Some(m) = captures.name(name) {
                     write!(dst, "{}", m.as_str())

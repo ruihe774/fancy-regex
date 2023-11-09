@@ -51,6 +51,7 @@ struct Analyzer {
 }
 
 impl Analyzer {
+    #[allow(clippy::too_many_lines)]
     fn visit1<'a>(&mut self, expr: &'a Expr, must_exist: bool) -> Result<Info<'a>> {
         let start_group = self.group_ix;
         let mut children = Vec::new();
@@ -294,6 +295,7 @@ impl Analyzer {
         })
     }
 
+    #[allow(clippy::only_used_in_recursion)] // to be consistent with visit1
     fn visit2(&self, info: &mut Info<'_>, offset: isize) -> Result<()> {
         if offset == isize::MAX {
             return Ok(());
@@ -317,14 +319,15 @@ impl Analyzer {
                     // offset == MIN || offset == MAX means we are out of range.
                     // I don't think it's posssible, though.
                     // Who will have such a long regex pattern string?
-                    offset = (offset == isize::MIN).then_some(isize::MIN).unwrap_or(
-                        offset.saturating_add_unsigned(
-                            child_info
-                                .const_size
-                                .then_some(child_info.min_size)
-                                .unwrap_or(usize::MAX),
-                        ),
-                    );
+                    offset = if offset == isize::MIN {
+                        isize::MIN
+                    } else {
+                        offset.saturating_add_unsigned(if child_info.const_size {
+                            child_info.min_size
+                        } else {
+                            usize::MAX
+                        })
+                    };
                 }
             }
             Expr::Alt(_) => {
@@ -370,14 +373,15 @@ impl Analyzer {
                 let child_info = &mut info.children[0];
                 self.visit2(child_info, offset)?;
                 // XXX: merge duplicated code
-                let new_offset = (offset == isize::MIN).then_some(isize::MIN).unwrap_or(
-                    offset.saturating_add_unsigned(
-                        child_info
-                            .const_size
-                            .then_some(child_info.min_size)
-                            .unwrap_or(usize::MAX),
-                    ),
-                );
+                let new_offset = if offset == isize::MIN {
+                    isize::MIN
+                } else {
+                    offset.saturating_add_unsigned(if child_info.const_size {
+                        child_info.min_size
+                    } else {
+                        usize::MAX
+                    })
+                };
                 self.visit2(&mut info.children[1], new_offset)?;
                 self.visit2(&mut info.children[2], offset)?;
             }

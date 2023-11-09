@@ -149,9 +149,9 @@ Conditionals - if/then/else:
 `(?(<name>))`
 : continue only if capture group named *name* matched \
 `(?(1)true_branch|false_branch)`
-: if the first capture group matched then execute the true_branch regex expression, else execute false_branch ([docs](https://www.regular-expressions.info/conditional.html)) \
+: if the first capture group matched then execute the `true_branch` regex expression, else execute `false_branch` ([docs](https://www.regular-expressions.info/conditional.html)) \
 `(?(condition)true_branch|false_branch)`
-: if the condition matches then execute the true_branch regex expression, else execute false_branch from the point just before the condition was evaluated
+: if the condition matches then execute the `true_branch` regex expression, else execute `false_branch` from the point just before the condition was evaluated
 
 [regex]: https://crates.io/crates/regex
 */
@@ -159,6 +159,16 @@ Conditionals - if/then/else:
 #![doc(html_root_url = "https://docs.rs/fancy-regex/0.11.0")]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::missing_errors_doc)] // TODO
+#![allow(clippy::missing_panics_doc)] // TODO
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::redundant_else)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::wildcard_imports)]
 
 use regex_automata::util::pool::{Pool, PoolGuard};
 use std::borrow::Cow;
@@ -232,11 +242,13 @@ pub struct Matches<'r, 't> {
 
 impl<'r, 't> Matches<'r, 't> {
     /// Return the text being searched.
+    #[must_use]
     pub fn text(&self) -> &'t str {
         self.text
     }
 
     /// Return the underlying regex.
+    #[must_use]
     pub fn regex(&self) -> &'r Regex {
         self.re
     }
@@ -303,11 +315,13 @@ pub struct CaptureMatches<'r, 't>(Matches<'r, 't>);
 
 impl<'r, 't> CaptureMatches<'r, 't> {
     /// Return the text being searched.
+    #[must_use]
     pub fn text(&self) -> &'t str {
         self.0.text
     }
 
     /// Return the underlying regex.
+    #[must_use]
     pub fn regex(&self) -> &'r Regex {
         self.0.re
     }
@@ -399,6 +413,7 @@ impl RegexBuilder {
     /// Create a new regex builder with a regex pattern.
     ///
     /// If the pattern is invalid, the call to `build` will fail later.
+    #[must_use]
     pub fn new() -> Self {
         RegexBuilder(RegexOptions::default())
     }
@@ -506,6 +521,7 @@ impl Regex {
     }
 
     /// Returns the original string of this regex.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.pattern
             .as_ref()
@@ -514,6 +530,7 @@ impl Regex {
     }
 
     /// Returns the expr tree of this regex.
+    #[must_use]
     pub fn as_expr_tree(&self) -> &ExprTree {
         &self.tree
     }
@@ -537,7 +554,7 @@ impl Regex {
 
     /// Returns an iterator for each successive non-overlapping match in `text`.
     ///
-    /// If you have capturing groups in your regex that you want to extract, use the [Regex::captures_iter()]
+    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures_iter`()]
     /// method.
     ///
     /// # Example
@@ -554,6 +571,7 @@ impl Regex {
     /// assert_eq!(matches.next().unwrap().unwrap().as_str(), "iterators");
     /// assert!(matches.next().is_none());
     /// ```
+    #[must_use]
     pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Matches<'r, 't> {
         Matches {
             re: self,
@@ -565,7 +583,7 @@ impl Regex {
 
     /// Find the first match in the input text.
     ///
-    /// If you have capturing groups in your regex that you want to extract, use the [Regex::captures()]
+    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures`()]
     /// method.
     ///
     /// # Example
@@ -599,7 +617,7 @@ impl Regex {
     /// ```
     ///
     /// Note that in some cases this is not the same as using the `find`
-    /// method and passing a slice of the string, see [Regex::captures_from_pos()] for details.
+    /// method and passing a slice of the string, see [`Regex::captures_from_pos`()] for details.
     pub fn find_from_pos<'t>(&self, text: &'t str, pos: usize) -> Result<Option<Match<'t>>> {
         self.find_from_pos_with_option_flags(text, pos, 0)
     }
@@ -642,6 +660,7 @@ impl Regex {
     ///
     /// assert!(all_captures.next().is_none());
     /// ```
+    #[must_use]
     pub fn captures_iter<'r, 't>(&'r self, text: &'t str) -> CaptureMatches<'r, 't> {
         CaptureMatches(self.find_iter(text))
     }
@@ -734,15 +753,17 @@ impl Regex {
     }
 
     /// Returns the number of captures, including the implicit capture of the entire expression.
+    #[must_use]
     pub fn captures_len(&self) -> usize {
         self.n_groups
     }
 
     /// Returns an iterator over the capture names.
+    #[must_use]
     pub fn capture_names(&self) -> CaptureNames {
         let mut names = Vec::new();
         names.resize(self.captures_len(), None);
-        for (name, &i) in self.tree.named_groups.iter() {
+        for (name, &i) in &self.tree.named_groups {
             names[i] = Some(name.as_str());
         }
         CaptureNames(names.into_iter())
@@ -752,7 +773,7 @@ impl Regex {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn debug_print(&self) {
-        self.machine.debug_print()
+        self.machine.debug_print();
     }
 
     /// Replaces the leftmost-first match with the replacement provided.
@@ -959,24 +980,28 @@ impl Clone for Regex {
 impl<'t> Match<'t> {
     /// Returns the starting byte offset of the match in the text.
     #[inline]
+    #[must_use]
     pub fn start(&self) -> usize {
         self.start
     }
 
     /// Returns the ending byte offset of the match in the text.
     #[inline]
+    #[must_use]
     pub fn end(&self) -> usize {
         self.end
     }
 
     /// Returns the range over the starting and ending byte offsets of the match in text.
     #[inline]
+    #[must_use]
     pub fn range(&self) -> Range<usize> {
         self.start..self.end
     }
 
     /// Returns the matched text.
     #[inline]
+    #[must_use]
     pub fn as_str(&self) -> &'t str {
         &self.text[self.start..self.end]
     }
@@ -1005,6 +1030,7 @@ impl<'r, 't> Captures<'r, 't> {
     ///
     /// If there is no match for that group or the index does not correspond to a group, `None` is
     /// returned. The index 0 returns the whole match.
+    #[must_use]
     pub fn get(&self, i: usize) -> Option<Match<'t>> {
         let Captures {
             text, ref saves, ..
@@ -1027,6 +1053,7 @@ impl<'r, 't> Captures<'r, 't> {
 
     /// Returns the match for a named capture group.  Returns `None` the capture
     /// group did not match or if there is no group with the given name.
+    #[must_use]
     pub fn name(&self, name: &str) -> Option<Match<'t>> {
         self.named_groups.get(name).and_then(|i| self.get(*i))
     }
@@ -1057,14 +1084,24 @@ impl<'r, 't> Captures<'r, 't> {
 
     /// Iterate over the captured groups in order in which they appeared in the regex. The first
     /// capture corresponds to the whole match.
+    #[must_use]
     pub fn iter<'c>(&'c self) -> SubCaptureMatches<'c, 't> {
         SubCaptureMatches { caps: self, i: 0 }
     }
 
     /// How many groups were captured. This is always at least 1 because group 0 returns the whole
     /// match.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.saves.len() / 2
+    }
+}
+
+impl<'r, 't, 'c> IntoIterator for &'c Captures<'r, 't> {
+    type IntoIter = SubCaptureMatches<'c, 't>;
+    type Item = std::option::Option<Match<'t>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -1084,8 +1121,7 @@ impl<'r, 't> Index<usize> for Captures<'r, 't> {
 
     fn index(&self, i: usize) -> &str {
         self.get(i)
-            .map(|m| m.as_str())
-            .unwrap_or_else(|| panic!("no group at index '{}'", i))
+            .map_or_else(|| panic!("no group at index '{i}'"), |m| m.as_str())
     }
 }
 
@@ -1106,8 +1142,7 @@ impl<'r, 't, 'i> Index<&'i str> for Captures<'r, 't> {
 
     fn index<'a>(&'a self, name: &'i str) -> &'a str {
         self.name(name)
-            .map(|m| m.as_str())
-            .unwrap_or_else(|| panic!("no group named '{}'", name))
+            .map_or_else(|| panic!("no group named '{name}'"), |m| m.as_str())
     }
 }
 
@@ -1148,6 +1183,7 @@ impl<'r> Iterator for CaptureNames<'r> {
 }
 
 // precondition: ix > 0
+#[allow(clippy::cast_possible_wrap)]
 #[inline]
 fn prev_codepoint_ix(s: impl AsRef<[u8]>, mut ix: usize) -> usize {
     let bytes = s.as_ref();

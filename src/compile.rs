@@ -46,6 +46,7 @@ struct VMBuilder {
     n_saves: usize,
 }
 
+#[allow(clippy::match_on_vec_items)]
 impl VMBuilder {
     fn new(max_group: usize) -> VMBuilder {
         VMBuilder {
@@ -91,7 +92,7 @@ impl VMBuilder {
     fn set_repeat_target(&mut self, repeat_pc: usize, target: usize) {
         match self.prog[repeat_pc] {
             Insn::Repeat { ref mut next, .. } | Insn::RepeatEpsilon { ref mut next, .. } => {
-                *next = target
+                *next = target;
             }
             _ => panic!("mutating instruction other than Repeat"),
         }
@@ -343,7 +344,7 @@ impl Compiler {
 
         self.compile_delegates(&children[..prefix_end])?;
 
-        for child in children[prefix_end..suffix_begin].iter() {
+        for child in &children[prefix_end..suffix_begin] {
             self.visit(child.borrow(), true)?;
         }
 
@@ -532,23 +533,23 @@ impl Compiler {
     }
 
     fn compile_delegate(&mut self, info: &Info) -> Result<()> {
-        Ok(match info.expr {
-            Expr::Literal { val, casei } => self.b.add(Insn::Lit {
+        if let Expr::Literal { val, casei } = info.expr {
+            self.b.add(Insn::Lit {
                 val: val.clone(),
                 casei: *casei,
-            }),
-            _ => {
-                let mut builder = DelegateBuilder::new();
-                builder.push(info);
-                builder.build(
-                    RegexOptions {
-                        anchored: true,
-                        ..self.options
-                    },
-                    &mut self.b,
-                )?
-            }
-        })
+            });
+        } else {
+            let mut builder = DelegateBuilder::new();
+            builder.push(info);
+            builder.build(
+                RegexOptions {
+                    anchored: true,
+                    ..self.options
+                },
+                &mut self.b,
+            )?;
+        };
+        Ok(())
     }
 }
 
@@ -581,7 +582,7 @@ pub(crate) fn compile_inner(
     PATTERN_MAPPING
         .write()
         .unwrap()
-        .insert(format!("{:?}", re), format!("{}", hir));
+        .insert(format!("{re:?}"), format!("{hir}"));
 
     Ok(re)
 }
@@ -662,13 +663,14 @@ impl<'a> DelegateBuilder<'a> {
             },
         )?;
 
-        Ok(b.add(Insn::Delegate {
+        b.add(Insn::Delegate {
             inner: compiled,
             start_group,
             end_group,
             anchored,
             drop_first,
-        }))
+        });
+        Ok(())
     }
 }
 
@@ -709,7 +711,7 @@ mod tests {
 
         let prog = c.b.prog;
 
-        assert_eq!(prog.len(), 8, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 8, "prog: {prog:?}");
         assert_matches!(prog[0], Split(1, 3));
         assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == &"a");
         assert_matches!(prog[2], Jmp(7));
@@ -724,7 +726,7 @@ mod tests {
     fn look_around_pattern_can_be_delegated() {
         let prog = compile_prog("(?=ab*)c");
 
-        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {prog:?}");
         assert_matches!(prog[0], Save(0));
         assert_delegate(&prog[1], "(?:ab*)");
         assert_matches!(prog[2], Restore(0));
@@ -736,7 +738,7 @@ mod tests {
     fn easy_concat_can_delegate_end() {
         let prog = compile_prog("(?!x)(?:a|ab)x*");
 
-        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {prog:?}");
         assert_matches!(prog[0], Split(1, 3));
         assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == &"x");
         assert_matches!(prog[2], FailNegativeLookAround);
@@ -748,7 +750,7 @@ mod tests {
     fn hard_concat_can_delegate_const_size_end() {
         let prog = compile_prog("(?:(?!x)(?:a|b)c)x*");
 
-        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {prog:?}");
         assert_matches!(prog[0], Split(1, 3));
         assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == &"x");
         assert_matches!(prog[2], FailNegativeLookAround);
@@ -760,7 +762,7 @@ mod tests {
     fn hard_concat_can_delegate_variable_end() {
         let prog = compile_prog("(?:(?!x)(?:a|ab))x*");
 
-        assert_eq!(prog.len(), 5, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 5, "prog: {prog:?}");
         assert_matches!(prog[0], Split(1, 3));
         assert_matches!(prog[1], Lit { val: ref l, casei: false } if l == &"x");
         assert_matches!(prog[2], FailNegativeLookAround);
@@ -772,7 +774,7 @@ mod tests {
     fn conditional_expression_can_be_compiled() {
         let prog = compile_prog(r"(?(ab)c|d)");
 
-        assert_eq!(prog.len(), 8, "prog: {:?}", prog);
+        assert_eq!(prog.len(), 8, "prog: {prog:?}");
 
         assert_matches!(prog[0], BeginAtomic);
         assert_matches!(prog[1], Split(2, 6));
@@ -805,13 +807,13 @@ mod tests {
                     PATTERN_MAPPING
                         .read()
                         .unwrap()
-                        .get(&format!("{:?}", inner))
+                        .get(&format!("{inner:?}"))
                         .unwrap(),
                     re
                 );
             }
             _ => {
-                panic!("Expected Insn::Delegate but was {:#?}", insn);
+                panic!("Expected Insn::Delegate but was {insn:#?}");
             }
         }
     }

@@ -208,7 +208,7 @@ impl Prog {
     #[doc(hidden)]
     pub(crate) fn debug_print(&self) {
         for (i, insn) in self.body.iter().enumerate() {
-            println!("{:3}: {:?}", i, insn);
+            println!("{i:3}: {insn:?}");
         }
     }
 }
@@ -327,7 +327,7 @@ impl Machine {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub(crate) fn debug_print(&self) {
-        self.prog.debug_print()
+        self.prog.debug_print();
     }
 }
 
@@ -461,7 +461,7 @@ impl Session {
         self.trace(format_args!(
             "stack after {}: {:?}",
             operation, self.state.stack
-        ))
+        ));
     }
 
     fn trace(&self, args: fmt::Arguments) {
@@ -475,7 +475,7 @@ impl Session {
     #[cold]
     #[cfg(debug_assertions)]
     fn do_trace(args: fmt::Arguments) {
-        eprintln!("{}", args);
+        eprintln!("{args}");
     }
 
     pub(crate) fn run(
@@ -591,7 +591,8 @@ impl Session {
         Ok(last_success.is_some())
     }
 
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::match_on_vec_items)]
+    #[allow(clippy::too_many_lines)]
     fn run_inner(
         &mut self,
         mut pc: usize,
@@ -823,7 +824,7 @@ impl Session {
                         } else {
                             // Do we need to check start_group + 1 == end_group && !drop_first for non-capturing search?
                             // No, because regex-automata will check this for us.
-                            let offset = drop_first as usize;
+                            let offset = usize::from(drop_first);
                             self.state
                                 .inner_slots
                                 .resize((end_group - start_group + offset) * 2, None);
