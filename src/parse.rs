@@ -55,6 +55,8 @@ pub enum Expr {
     Any {
         /// Whether it also matches newlines or not
         newline: bool,
+        /// CRLF mode
+        crlf: bool,
     },
     /// An assertion
     Assertion(Assertion),
@@ -213,9 +215,9 @@ impl Expr {
 
         Ok(match self {
             Expr::Empty => Ast::Empty(Box::new(span)),
-            Expr::Any { newline } => with_flag(
+            Expr::Any { newline, crlf } => with_flag(
                 newline.then_some(Flag::DotMatchesNewLine),
-                Ast::Dot(Box::new(span)),
+                with_flag(crlf.then_some(Flag::CRLF), Ast::Dot(Box::new(span))),
             ),
             Expr::Literal { val, casei } => with_flag(
                 casei.then_some(Flag::CaseInsensitive),
@@ -604,6 +606,7 @@ impl<'a> Parser<'a> {
                 ix + 1,
                 Expr::Any {
                     newline: self.flag(FLAG_DOTNL),
+                    crlf: false,
                 },
             )),
             b'^' => Ok((
@@ -1433,8 +1436,20 @@ mod tests {
 
     #[test]
     fn any() {
-        assert_eq!(p("."), Expr::Any { newline: false });
-        assert_eq!(p("(?s:.)"), Expr::Any { newline: true });
+        assert_eq!(
+            p("."),
+            Expr::Any {
+                newline: false,
+                crlf: false
+            }
+        );
+        assert_eq!(
+            p("(?s:.)"),
+            Expr::Any {
+                newline: true,
+                crlf: false
+            }
+        );
     }
 
     #[test]
@@ -1700,7 +1715,10 @@ mod tests {
         assert_eq!(
             p("(.)\\1"),
             Expr::Concat(vec![
-                Expr::Group(Box::new(Expr::Any { newline: false })),
+                Expr::Group(Box::new(Expr::Any {
+                    newline: false,
+                    crlf: false
+                })),
                 Expr::Backref(1),
             ])
         );
@@ -1711,7 +1729,10 @@ mod tests {
         assert_eq!(
             p("(?<i>.)\\k<i>"),
             Expr::Concat(vec![
-                Expr::Group(Box::new(Expr::Any { newline: false })),
+                Expr::Group(Box::new(Expr::Any {
+                    newline: false,
+                    crlf: false
+                })),
                 Expr::Backref(1),
             ])
         );
@@ -1744,20 +1765,44 @@ mod tests {
 
     #[test]
     fn flag_state() {
-        assert_eq!(p("(?s)."), Expr::Any { newline: true });
-        assert_eq!(p("(?s:(?-s:.))"), Expr::Any { newline: false });
+        assert_eq!(
+            p("(?s)."),
+            Expr::Any {
+                newline: true,
+                crlf: false
+            }
+        );
+        assert_eq!(
+            p("(?s:(?-s:.))"),
+            Expr::Any {
+                newline: false,
+                crlf: false
+            }
+        );
         assert_eq!(
             p("(?s:.)."),
             Expr::Concat(vec![
-                Expr::Any { newline: true },
-                Expr::Any { newline: false },
+                Expr::Any {
+                    newline: true,
+                    crlf: false
+                },
+                Expr::Any {
+                    newline: false,
+                    crlf: false
+                },
             ])
         );
         assert_eq!(
             p("(?:(?s).)."),
             Expr::Concat(vec![
-                Expr::Any { newline: true },
-                Expr::Any { newline: false },
+                Expr::Any {
+                    newline: true,
+                    crlf: false
+                },
+                Expr::Any {
+                    newline: false,
+                    crlf: false
+                },
             ])
         );
     }

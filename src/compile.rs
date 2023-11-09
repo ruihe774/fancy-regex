@@ -117,7 +117,10 @@ impl Compiler {
             self.b.add(Insn::Prefilter(Some(Box::new(prefilter))));
             self.visit(info, false)?;
         } else {
-            let any = Expr::Any { newline: true };
+            let any = Expr::Any {
+                newline: true,
+                crlf: false,
+            };
             let repeat = Expr::Repeat {
                 child: Box::new(any),
                 lo: 0,
@@ -179,8 +182,8 @@ impl Compiler {
                     casei,
                 });
             }
-            Expr::Any { newline } => {
-                self.b.add(Insn::Any { newline });
+            Expr::Any { newline, crlf } => {
+                self.b.add(Insn::Any { newline, crlf });
             }
             Expr::Concat(_) => {
                 self.compile_concat(&info.children, hard)?;
@@ -627,7 +630,7 @@ impl<'a> DelegateBuilder<'a> {
                 lo: 0,
                 hi: usize::MAX,
                 greedy: false,
-            }) => matches!(child.as_ref(), Expr::Any { newline: true }),
+            }) => matches!(child.as_ref(), Expr::Any { newline: true, .. }),
             _ => false,
         } {
             exprs.pop_front();

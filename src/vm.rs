@@ -110,6 +110,8 @@ pub enum Insn {
     Any {
         /// Whether to match newline (\n)
         newline: bool,
+        /// CRLF mode
+        crlf: bool,
     },
     /// Assertions
     Assertion(Assertion),
@@ -613,8 +615,10 @@ impl VM {
                         };
                         return Ok(true);
                     }
-                    Insn::Any { newline } => {
-                        if ix < range.end && (newline || sb[ix] != b'\n') {
+                    Insn::Any { newline, crlf } => {
+                        if ix < range.end
+                            && (newline || sb[ix] != b'\n' && (!crlf || sb[ix] != b'\r'))
+                        {
                             ix += codepoint_len_at(sb, ix);
                         } else {
                             break 'fail;
