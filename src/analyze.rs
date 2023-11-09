@@ -397,7 +397,7 @@ impl Analyzer {
 }
 
 /// Analyze the parsed expression to determine whether it requires fancy features.
-pub fn analyze<'a>(tree: &'a ExprTree) -> Result<Info<'a>> {
+pub fn analyze(tree: &ExprTree) -> Result<Info<'_>> {
     let mut analyzer = Analyzer { group_ix: 0 };
 
     analyzer.visit(&tree.expr)

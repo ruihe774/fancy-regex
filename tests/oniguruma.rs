@@ -53,7 +53,7 @@ fn parse_tests(test_source: &str) -> Vec<(Test, String)> {
             .get(6)
             .unwrap()
             .as_str()
-            .split(",")
+            .split(',')
             .map(|s| s.trim().parse().unwrap())
             .collect();
 
@@ -159,7 +159,7 @@ fn run_test(test: &Test) -> Option<String> {
 
     match *assertion {
         Assertion::Match { group, start, end } => {
-            let captures_result = regex.captures(&text).unwrap();
+            let captures_result = regex.captures(text).unwrap();
 
             if let Some(captures) = captures_result {
                 let Some(m) = captures.get(group) else {
@@ -182,7 +182,7 @@ fn run_test(test: &Test) -> Option<String> {
         }
         Assertion::NoMatch => {
             let regex = FancyRegex::new(pattern).unwrap();
-            let result = regex.find(&text).unwrap();
+            let result = regex.find(text).unwrap();
             if result.is_some() {
                 Some("Match found".to_string())
             } else {
@@ -218,18 +218,16 @@ fn oniguruma() {
                 &test.source, &expected_failure, &failure
             );
             ignored += 1;
-        } else {
-            if let Some(failure) = result {
-                // This is a weird way to do the assertions, but the nice thing about it is that we
-                // can run the tests without an "ignore" file and instead of failing, print the
-                // content for the ignore file. To do that, disable the assert and enable the print:
+        } else if let Some(failure) = result {
+            // This is a weird way to do the assertions, but the nice thing about it is that we
+            // can run the tests without an "ignore" file and instead of failing, print the
+            // content for the ignore file. To do that, disable the assert and enable the print:
 
-                // println!("  // {}\n  {}\n", failure, test.source);
-                assert!(false, "Test {} failed: {}", &test.source, failure);
-            } else {
-                // println!("Success: {}", test.source);
-                success += 1;
-            }
+            // println!("  // {}\n  {}\n", failure, test.source);
+            assert!(false, "Test {} failed: {}", &test.source, failure);
+        } else {
+            // println!("Success: {}", test.source);
+            success += 1;
         }
     }
 

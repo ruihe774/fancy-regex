@@ -67,7 +67,7 @@ fn run_backtrack(c: &mut Criterion) {
         b.iter(|| {
             let result = run_default_from_pos(p.clone(), "babab", 0).unwrap();
             assert_eq!(result, Some(vec![0, 5, 0, 2]));
-            return result;
+            result
         })
     });
 }
@@ -94,7 +94,7 @@ fn run_backtrack_limit(c: &mut Criterion) {
     let p = Arc::new(compile(&a).unwrap());
     let s = "abababababababababababababababababababababababababababab";
     c.bench_function("run_backtrack_limit", |b| {
-        b.iter(|| run_default_from_pos(p.clone(), &s, 0).unwrap())
+        b.iter(|| run_default_from_pos(p.clone(), s, 0).unwrap())
     });
 }
 

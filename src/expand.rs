@@ -138,7 +138,7 @@ impl Expander {
     /// than calling `expansion` directly and appending to an existing string.
     pub fn append_expansion(&self, dst: &mut String, template: &str, captures: &Captures<'_, '_>) {
         let pos = dst.len();
-        let mut cursor = io::Cursor::new(mem::replace(dst, String::new()).into_bytes());
+        let mut cursor = io::Cursor::new(mem::take(dst).into_bytes());
         cursor.set_position(pos as u64);
         self.write_expansion(&mut cursor, template, captures)
             .expect("expansion succeeded");

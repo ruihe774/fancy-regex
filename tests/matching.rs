@@ -151,18 +151,14 @@ fn conditional_with_lookaround_condition() {
 #[cfg_attr(feature = "track_caller", track_caller)]
 fn assert_match(re: &str, text: &str) {
     let result = match_text(re, text);
-    assert_eq!(
-        result, true,
-        "Expected regex '{}' to match text '{}'",
-        re, text
-    );
+    assert!(result, "Expected regex '{}' to match text '{}'", re, text);
 }
 
 #[cfg_attr(feature = "track_caller", track_caller)]
 fn assert_no_match(re: &str, text: &str) {
     let result = match_text(re, text);
-    assert_eq!(
-        result, false,
+    assert!(
+        !result,
         "Expected regex '{}' to not match text '{}'",
         re, text
     );

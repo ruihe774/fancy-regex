@@ -238,7 +238,7 @@ impl<'r, 't> Matches<'r, 't> {
 
     /// Return the underlying regex.
     pub fn regex(&self) -> &'r Regex {
-        &self.re
+        self.re
     }
 }
 
@@ -309,7 +309,7 @@ impl<'r, 't> CaptureMatches<'r, 't> {
 
     /// Return the underlying regex.
     pub fn regex(&self) -> &'r Regex {
-        &self.0.re
+        self.0.re
     }
 }
 
@@ -389,13 +389,18 @@ impl Default for RegexOptions {
     }
 }
 
+impl Default for RegexBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegexBuilder {
     /// Create a new regex builder with a regex pattern.
     ///
     /// If the pattern is invalid, the call to `build` will fail later.
     pub fn new() -> Self {
-        let builder = RegexBuilder(RegexOptions::default());
-        builder
+        RegexBuilder(RegexOptions::default())
     }
 
     /// Build the `Regex`.
@@ -551,7 +556,7 @@ impl Regex {
     /// ```
     pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Matches<'r, 't> {
         Matches {
-            re: &self,
+            re: self,
             text,
             last_end: 0,
             last_match: None,
@@ -721,7 +726,7 @@ impl Regex {
             .session
             .get()
             .run_to(&mut saves, text, range, Some(self.n_groups))?;
-        Ok(result.then(|| Captures {
+        Ok(result.then_some(Captures {
             text,
             saves,
             named_groups,
@@ -932,8 +937,8 @@ fn new_session_pool(
 ) -> Pool<Session, Box<dyn Fn() -> Session + Send + Sync + UnwindSafe + RefUnwindSafe>> {
     Pool::new(Box::new(move || {
         let state = Machine::create_state(&machine.prog);
-        let session = machine.clone().create_session(state);
-        session
+
+        machine.clone().create_session(state)
     }))
 }
 

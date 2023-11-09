@@ -676,21 +676,17 @@ impl Session {
                             if sb != val.as_bytes() {
                                 break 'fail;
                             }
-                        } else {
-                            if !eq_test_exact_size(sb.iter().copied(), val.bytes(), |a, b| {
-                                // Do we need a == b shortcut? Is to_ascii_lowercase() fast?
-                                a == b || a.to_ascii_lowercase() == b.to_ascii_lowercase()
-                            }) {
-                                if !s.get(ix..end).map_or(false, |s| {
-                                    eq_test(
-                                        s.chars().flat_map(char::to_lowercase),
-                                        val.chars().flat_map(char::to_lowercase),
-                                        |a, b| a == b,
-                                    )
-                                }) {
-                                    break 'fail;
-                                }
-                            }
+                        } else if !eq_test_exact_size(sb.iter().copied(), val.bytes(), |a, b| {
+                            // Do we need a == b shortcut? Is to_ascii_lowercase() fast?
+                            a == b || a.to_ascii_lowercase() == b.to_ascii_lowercase()
+                        }) && !s.get(ix..end).map_or(false, |s| {
+                            eq_test(
+                                s.chars().flat_map(char::to_lowercase),
+                                val.chars().flat_map(char::to_lowercase),
+                                |a, b| a == b,
+                            )
+                        }) {
+                            break 'fail;
                         }
                         ix = end;
                     }
@@ -890,8 +886,8 @@ fn create_session(prog: Arc<Prog>) -> Session {
         DEFAULT_BACKTRACK_LIMIT,
         OPTION_TRACE,
     );
-    let session = machine.create_session(state);
-    session
+
+    machine.create_session(state)
 }
 
 /// Run the program with trace printing for debugging.

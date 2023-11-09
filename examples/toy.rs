@@ -42,12 +42,12 @@ fn main() {
             }
         } else if cmd == "compile" {
             if let Some(re) = args.next() {
-                let r = Regex::new(&re).unwrap();
+                let r = Regex::new(re).unwrap();
                 r.debug_print();
             }
         } else if cmd == "run" {
             let re = args.next().expect("expected regexp argument");
-            let r = Regex::new(&re).unwrap();
+            let r = Regex::new(re).unwrap();
             let text = args.next().expect("expected text argument");
             let mut pos = 0;
             if let Some(pos_str) = args.next() {
@@ -63,7 +63,7 @@ fn main() {
                         print!("_");
                     }
                 }
-                println!("");
+                println!();
                 for cap in caps.iter() {
                     println!("iterate {:?}", cap);
                 }
@@ -100,8 +100,8 @@ fn graph(re: &str) {
     println!("digraph G {{");
     for (i, insn) in prog.body.iter().enumerate() {
         let label = format!("{:?}", insn)
-            .replace(r#"\"#, r#"\\"#)
-            .replace(r#"""#, r#"\""#);
+            .replace('\\', r#"\\"#)
+            .replace('"', r#"\""#);
         println!(r#"{:3} [label="{}: {}"];"#, i, i, label);
         match *insn {
             Insn::Split(a, b) => {

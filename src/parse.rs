@@ -25,10 +25,11 @@ use regex_syntax::escape;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::Ordering as MemOrdering;
 
 use crate::codepoint_len;
 use crate::CompileError;
@@ -267,19 +268,11 @@ impl Expr {
             },
             Expr::Concat(children) => Ast::Concat(Box::new(Concat {
                 span,
-                asts: try_collect(
-                    children
-                        .into_iter()
-                        .map(|child| child.to_ast(capture_index)),
-                )?,
+                asts: try_collect(children.iter().map(|child| child.to_ast(capture_index)))?,
             })),
             Expr::Alt(children) => Ast::Alternation(Box::new(Alternation {
                 span,
-                asts: try_collect(
-                    children
-                        .into_iter()
-                        .map(|child| child.to_ast(capture_index)),
-                )?,
+                asts: try_collect(children.iter().map(|child| child.to_ast(capture_index)))?,
             })),
             Expr::Group(child) => Ast::Group(Box::new(Group {
                 span,
@@ -316,7 +309,7 @@ impl Expr {
             })),
             Expr::Delegate { inner, casei, .. } => with_flag(
                 casei.then_some(Flag::CaseInsensitive),
-                parse_ast(&inner, capture_index)?,
+                parse_ast(inner, capture_index)?,
             ),
             _ => panic!("attempting to convert hard expr"),
         })
@@ -546,12 +539,10 @@ impl<'a> Parser<'a> {
     }
 
     fn is_repeatable(&self, child: &Expr) -> bool {
-        match child {
-            Expr::LookAround(_, _) => false,
-            Expr::Empty => false,
-            Expr::Assertion(_) => false,
-            _ => true,
-        }
+        !matches!(
+            child,
+            Expr::LookAround(_, _) | Expr::Empty | Expr::Assertion(_)
+        )
     }
 
     // ix, lo, hi
@@ -652,13 +643,12 @@ impl<'a> Parser<'a> {
             let group = if let Some(group) = self.named_groups.get(id) {
                 Some(*group)
             } else if let Ok(group) = id.parse::<isize>() {
-                if group > 0 {
-                    Some(group as usize)
-                } else if group == 0 {
-                    // XXX
-                    return Err(Error::ParseError(ix, ParseError::InvalidBackref));
-                } else {
-                    self.curr_group.checked_add_signed(group + 1)
+                match group.cmp(&0) {
+                    Ordering::Greater => Some(group as usize),
+                    Ordering::Equal => {
+                        return Err(Error::ParseError(ix, ParseError::InvalidBackref))
+                    } // XXX
+                    Ordering::Less => self.curr_group.checked_add_signed(group + 1),
                 }
             } else {
                 None
@@ -685,7 +675,7 @@ impl<'a> Parser<'a> {
                 return Ok((end, Expr::Backref(group)));
             }
         }
-        return Err(Error::ParseError(ix, ParseError::InvalidBackref));
+        Err(Error::ParseError(ix, ParseError::InvalidBackref))
     }
 
     // ix points to \ character
@@ -695,7 +685,7 @@ impl<'a> Parser<'a> {
             return Err(Error::ParseError(ix, ParseError::TrailingBackslash));
         };
         let end = ix + 1 + codepoint_len(b);
-        Ok(if is_digit(b) {
+        Ok(if b.is_ascii_digit() {
             return self.parse_numbered_backref(ix + 1);
         } else if matches!(b, b'k' | b'g') {
             // Named backref: \k<name>
@@ -828,7 +818,7 @@ impl<'a> Parser<'a> {
         let bytes = self.re.as_bytes();
         let b = bytes[ix];
         let (end, s) = if ix + digits <= self.re.len()
-            && bytes[ix..ix + digits].iter().all(|&b| is_hex_digit(b))
+            && bytes[ix..ix + digits].iter().all(u8::is_ascii_hexdigit)
         {
             let end = ix + digits;
             (end, &self.re[ix..end])
@@ -843,7 +833,7 @@ impl<'a> Parser<'a> {
                 if endhex > starthex && b == b'}' {
                     break;
                 }
-                if is_hex_digit(b) && endhex < starthex + 8 {
+                if b.is_ascii_hexdigit() && endhex < starthex + 8 {
                     endhex += 1;
                 } else {
                     return Err(Error::ParseError(ix, ParseError::InvalidHex));
@@ -1084,7 +1074,7 @@ impl<'a> Parser<'a> {
         let bytes = self.re.as_bytes();
         // get the character after the open paren
         let b = bytes[ix];
-        let (mut next, condition) = if is_digit(b) {
+        let (mut next, condition) = if b.is_ascii_digit() {
             self.parse_numbered_backref(ix)?
         } else if b == b'\'' {
             self.parse_named_backref(ix, "'", "'")?
@@ -1193,7 +1183,7 @@ impl<'a> Parser<'a> {
 
     fn optimize(&self, mut expr: Expr) -> Expr {
         loop {
-            let (new_expr, changed) = self.optimize_expr_pass(expr);
+            let (new_expr, changed) = Self::optimize_expr_pass(expr);
             expr = new_expr;
             if !changed {
                 break expr;
@@ -1201,17 +1191,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn optimize_expr_pass(&self, expr: Expr) -> (Expr, bool) {
+    fn optimize_expr_pass(expr: Expr) -> (Expr, bool) {
         let changed = AtomicBool::new(false); // fuck Rust
         macro_rules! mark_change {
             ($expr:expr) => {{
-                changed.fetch_or(true, Ordering::Relaxed);
+                changed.fetch_or(true, MemOrdering::Relaxed);
                 $expr
             }};
         }
         let recur = |expr| {
-            let (expr, subchanged) = self.optimize_expr_pass(expr);
-            changed.fetch_or(subchanged, Ordering::Relaxed);
+            let (expr, subchanged) = Self::optimize_expr_pass(expr);
+            changed.fetch_or(subchanged, MemOrdering::Relaxed);
             expr
         };
         (
@@ -1264,7 +1254,7 @@ impl<'a> Parser<'a> {
                                 // no change
                                 (_, item) => Some(item),
                             };
-                            children.extend(item.into_iter());
+                            children.extend(item);
                             children
                         });
                     if children.len() == 1 {
@@ -1345,7 +1335,7 @@ impl<'a> Parser<'a> {
                 },
                 e => e,
             },
-            changed.load(Ordering::Relaxed),
+            changed.load(MemOrdering::Relaxed),
         )
     }
 }
@@ -1353,7 +1343,7 @@ impl<'a> Parser<'a> {
 // return (ix, value)
 pub(crate) fn parse_decimal(s: &str, ix: usize) -> Option<(usize, usize)> {
     let mut end = ix;
-    while end < s.len() && is_digit(s.as_bytes()[end]) {
+    while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
         end += 1;
     }
     usize::from_str(&s[ix..end]).ok().map(|val| (end, val))
@@ -1387,14 +1377,6 @@ pub(crate) fn parse_id<'a>(s: &'a str, open: &'_ str, close: &'_ str) -> Option<
 
 fn is_id_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-'
-}
-
-fn is_digit(b: u8) -> bool {
-    b'0' <= b && b <= b'9'
-}
-
-fn is_hex_digit(b: u8) -> bool {
-    is_digit(b) || (b'a' <= (b | 32) && (b | 32) <= b'f')
 }
 
 pub(crate) fn make_literal(s: &str) -> Expr {
