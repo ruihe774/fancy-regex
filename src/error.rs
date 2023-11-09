@@ -1,5 +1,5 @@
-use alloc::string::String;
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::fmt;
 use regex_automata::meta::BuildError as RaBuildError;
 use regex_syntax::Error as RsParseError;
