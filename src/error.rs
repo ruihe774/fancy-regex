@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::boxed::Box;
 use core::fmt;
 use regex_automata::meta::BuildError as RaBuildError;
 use regex_syntax::Error as RsParseError;
@@ -63,9 +64,11 @@ pub enum ParseError {
 #[non_exhaustive]
 pub enum CompileError {
     /// regex-syntax crate error
-    InnerSyntaxError(RsParseError),
+    // Box it because RsParseError is too large
+    InnerSyntaxError(Box<RsParseError>),
     /// regex-automata crate error
-    InnerBuildError(RaBuildError),
+    // Box is because RaBuildError is too large
+    InnerBuildError(Box<RaBuildError>),
     /// Look-behind assertion without constant size
     LookBehindNotConst,
     /// Couldn't parse group name

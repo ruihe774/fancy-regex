@@ -20,6 +20,7 @@
 
 //! Compilation of regexes to VM.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use regex_automata::meta::Regex as RaRegex;
 use regex_automata::meta::{Builder as RaBuilder, Config as RaConfig};
@@ -508,6 +509,7 @@ pub(crate) fn compile_inner(
     let re = RaBuilder::new()
         .configure(config)
         .build_from_hir(hir)
+        .map_err(Box::new)
         .map_err(CompileError::InnerBuildError)
         .map_err(Error::CompileError)?;
 
