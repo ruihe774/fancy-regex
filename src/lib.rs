@@ -160,12 +160,14 @@ Conditionals - if/then/else:
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
+use regex_automata::util::pool::{Pool, PoolGuard};
 use std::borrow::Cow;
-use std::cell::{RefCell, RefMut};
 use std::fmt::{Debug, Formatter};
-use std::ops::{Deref, DerefMut, Index, Range};
+use std::ops::{Index, Range};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::str::FromStr;
-use vm::{DEFAULT_BACKTRACK_LIMIT, DEFAULT_MAX_STACK, VM};
+use std::sync::Arc;
+use vm::{Machine, Session, DEFAULT_BACKTRACK_LIMIT, DEFAULT_MAX_STACK};
 
 mod analyze;
 mod compile;
@@ -195,13 +197,14 @@ const MAX_RECURSION: usize = 64;
 pub struct RegexBuilder(RegexOptions);
 
 /// A compiled regular expression.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Regex {
-    pattern: Option<String>,
-    tree: ExprTree,
-    vm: RefCell<VM>,
+    pattern: Option<Arc<String>>,
+    tree: Arc<ExprTree>,
+    machine: Machine,
+    session: Pool<Session, Box<dyn Fn() -> Session + Send + Sync + UnwindSafe + RefUnwindSafe>>,
+    saves: Pool<Vec<usize>, fn() -> Vec<usize>>,
     n_groups: usize,
-    saves: RefCell<Vec<usize>>,
 }
 
 /// A single match of a regex or group in an input text
@@ -348,45 +351,8 @@ impl<'r, 't> Iterator for CaptureMatches<'r, 't> {
 #[derive(Debug)]
 pub struct Captures<'r, 't> {
     text: &'t str,
-    saves: CowRef<'r, Vec<usize>>,
+    saves: PoolGuard<'r, Vec<usize>, fn() -> Vec<usize>>,
     named_groups: &'r NamedGroups,
-}
-
-#[derive(Debug)]
-enum CowRef<'r, T> {
-    Borrowed(RefMut<'r, T>),
-    Owned(T),
-}
-
-impl<T> AsRef<T> for CowRef<'_, T> {
-    fn as_ref(&self) -> &T {
-        self
-    }
-}
-
-impl<T> AsMut<T> for CowRef<'_, T> {
-    fn as_mut(&mut self) -> &mut T {
-        self
-    }
-}
-
-impl<T> Deref for CowRef<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        match self {
-            CowRef::Borrowed(borrowed) => borrowed.deref(),
-            CowRef::Owned(owned) => owned,
-        }
-    }
-}
-
-impl<T> DerefMut for CowRef<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        match self {
-            CowRef::Borrowed(borrowed) => borrowed.deref_mut(),
-            CowRef::Owned(owned) => owned,
-        }
-    }
 }
 
 /// Iterator for captured groups in order in which they appear in the regex.
@@ -512,9 +478,9 @@ impl Regex {
         };
 
         let info = analyze(&tree)?;
-        let prog = compile_with_options(&info, options)?;
+        let prog = Arc::new(compile_with_options(&info, options)?);
         let n_groups = info.end_group;
-        let vm = VM::new(prog, options.max_stack, options.backtrack_limit, 0);
+        let machine = Machine::new(prog.clone(), options.max_stack, options.backtrack_limit, 0);
 
         let raw_tree = ExprTree {
             expr: match tree.expr {
@@ -526,15 +492,12 @@ impl Regex {
 
         Ok(Regex {
             n_groups,
-            pattern,
-            tree: raw_tree,
-            vm: RefCell::new(vm),
-            saves: RefCell::new(Vec::new()),
+            pattern: pattern.map(Arc::new),
+            tree: Arc::new(raw_tree),
+            machine: machine.clone(),
+            session: new_session_pool(machine),
+            saves: new_saves_pool(),
         })
-    }
-
-    fn vm(&self) -> RefMut<VM> {
-        self.vm.borrow_mut()
     }
 
     /// Returns the original string of this regex.
@@ -563,7 +526,7 @@ impl Regex {
     /// assert!(re.is_match("mirror mirror on the wall").unwrap());
     /// ```
     pub fn is_match(&self, text: &str) -> Result<bool> {
-        let result = self.vm().run(text, 0..text.len(), Some(0))?;
+        let result = self.session.get().run(text, 0..text.len(), Some(0))?;
         Ok(result.is_some())
     }
 
@@ -642,9 +605,10 @@ impl Regex {
         pos: usize,
         option_flags: u32,
     ) -> Result<Option<Match<'t>>> {
-        let result = self
-            .vm()
-            .run_with_options(text, pos..text.len(), Some(1), option_flags)?;
+        let result =
+            self.session
+                .get()
+                .run_with_options(text, pos..text.len(), Some(1), option_flags)?;
         Ok(result.map(|saves| Match::new(text, saves[0], saves[1])))
     }
 
@@ -751,13 +715,11 @@ impl Regex {
         range: Range<usize>,
     ) -> Result<Option<Captures<'r, 't>>> {
         let named_groups = &self.tree.named_groups;
-        let mut saves = self
-            .saves
-            .try_borrow_mut()
-            .map_or_else(|_| CowRef::Owned(Vec::new()), CowRef::Borrowed);
+        let mut saves = self.saves.get();
         saves.clear();
         let result = self
-            .vm()
+            .session
+            .get()
             .run_to(&mut saves, text, range, Some(self.n_groups))?;
         Ok(result.then(|| Captures {
             text,
@@ -785,7 +747,7 @@ impl Regex {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn debug_print(&self) {
-        self.vm().debug_print()
+        self.machine.debug_print()
     }
 
     /// Replaces the leftmost-first match with the replacement provided.
@@ -958,6 +920,34 @@ impl Regex {
         }
         new.push_str(&text[last_match..]);
         Cow::Owned(new)
+    }
+}
+
+fn new_saves_pool() -> Pool<Vec<usize>, fn() -> Vec<usize>> {
+    Pool::new(Vec::default)
+}
+
+fn new_session_pool(
+    machine: Machine,
+) -> Pool<Session, Box<dyn Fn() -> Session + Send + Sync + UnwindSafe + RefUnwindSafe>> {
+    Pool::new(Box::new(move || {
+        let state = Machine::create_state(&machine.prog);
+        let session = machine.clone().create_session(state);
+        session
+    }))
+}
+
+impl Clone for Regex {
+    fn clone(&self) -> Self {
+        let machine = self.machine.clone();
+        Regex {
+            pattern: self.pattern.clone(),
+            tree: self.tree.clone(),
+            machine: machine.clone(),
+            session: new_session_pool(machine),
+            saves: new_saves_pool(),
+            n_groups: self.n_groups,
+        }
     }
 }
 

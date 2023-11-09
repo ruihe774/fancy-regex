@@ -79,6 +79,7 @@ use regex_automata::Input;
 use std::fmt;
 use std::mem;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::codepoint_len;
 use crate::error::RuntimeError;
@@ -102,7 +103,7 @@ pub(crate) const DEFAULT_MAX_STACK: usize = 1_000_000;
 pub(crate) const DEFAULT_BACKTRACK_LIMIT: usize = 1_000_000;
 
 /// Instruction of the VM.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Insn {
     /// Successful end of program
     End,
@@ -187,12 +188,11 @@ pub enum Insn {
     /// Continue only if the specified capture group has already been populated as part of the match
     BackrefExistsCondition(usize),
     /// Prefilter to perform unanchored search
-    // Fuck Rust. We need Option here.
-    Prefilter(Option<Box<Prefilter>>),
+    Prefilter(Arc<Prefilter>),
 }
 
 /// Sequence of instructions for the VM to execute.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Prog {
     /// Instructions of the program
     pub body: Vec<Insn>,
@@ -226,8 +226,8 @@ struct Save {
     value: usize,
 }
 
-#[derive(Debug, Clone)]
-struct State {
+#[derive(Debug)]
+pub(crate) struct State {
     /// Saved values indexed by slot. Mostly indices to s, but can be repeat values etc.
     /// Always contains the saves of the current state.
     saves: Vec<usize>,
@@ -246,8 +246,16 @@ struct State {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct VM {
-    pub prog: Prog,
+pub(crate) struct Machine {
+    pub prog: Arc<Prog>,
+    pub options: u32,
+    pub max_stack: usize,
+    pub backtrack_limit: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct Session {
+    pub prog: Arc<Prog>,
     pub options: u32,
     pub max_stack: usize,
     pub backtrack_limit: usize,
@@ -287,14 +295,32 @@ impl State {
     }
 }
 
-impl VM {
-    pub(crate) fn new(prog: Prog, max_stack: usize, backtrack_limit: usize, options: u32) -> VM {
-        VM {
-            state: State::new(prog.n_saves),
+impl Machine {
+    pub(crate) fn new(
+        prog: Arc<Prog>,
+        max_stack: usize,
+        backtrack_limit: usize,
+        options: u32,
+    ) -> Machine {
+        Machine {
             prog,
             options,
             max_stack,
             backtrack_limit,
+        }
+    }
+
+    pub(crate) fn create_state(prog: &Prog) -> State {
+        State::new(prog.n_saves)
+    }
+
+    pub(crate) fn create_session(self, state: State) -> Session {
+        Session {
+            prog: self.prog,
+            options: self.options,
+            max_stack: self.max_stack,
+            backtrack_limit: self.backtrack_limit,
+            state,
         }
     }
 
@@ -303,7 +329,9 @@ impl VM {
     pub(crate) fn debug_print(&self) {
         self.prog.debug_print()
     }
+}
 
+impl Session {
     fn explicit_sp(&self) -> usize {
         self.prog.n_saves
     }
@@ -484,94 +512,83 @@ impl VM {
         range: Range<usize>,
         n_groups: Option<usize>,
     ) -> Result<bool> {
-        let prefilter = match &mut self.prog.body[0] {
-            Insn::Prefilter(prefilter_box) => prefilter_box.take().unwrap(),
+        let prefilter = match &self.prog.body[0] {
+            Insn::Prefilter(prefilter) => prefilter.clone(),
             _ => return self.run_inner(0, locations, s, range, n_groups),
         };
 
-        let mut core = |prefilter: &Prefilter| {
-            let sb = s.as_bytes();
+        let sb = s.as_bytes();
 
-            if !prefilter.assert(sb, &range) {
-                return Ok(false);
-            }
-
-            let Some(iter) = prefilter.search(sb, &range) else {
-                for pos in range.start..=range.end {
-                    if self.run_inner(1, locations, s, pos..range.end, n_groups)? {
-                        return Ok(true);
-                    }
-                }
-                return Ok(false);
-            };
-            let safe_offset = prefilter.safe_offset().unwrap();
-
-            let mut last_success: Option<usize> = None;
-            let old_len = locations.len();
-            reset_bitset(&mut self.state.visited);
-            'outer: for m in iter {
-                let mut pos = m.position;
-
-                if let Some(last_success) = last_success {
-                    let mut cursor = last_success;
-                    for _ in safe_offset..0 {
-                        cursor = prev_codepoint_ix(s, cursor);
-                    }
-                    for _ in 0..safe_offset {
-                        if cursor >= range.end {
-                            break;
-                        }
-                        cursor += codepoint_len_at(s, cursor);
-                    }
-                    if cursor <= pos {
-                        break;
-                    }
-                }
-
-                for _ in m.offset..0 {
-                    if pos >= range.end {
-                        continue 'outer;
-                    }
-                    pos += codepoint_len_at(s, pos);
-                }
-                for _ in 0..m.offset {
-                    if pos <= range.start {
-                        continue 'outer;
-                    }
-                    pos = prev_codepoint_ix(s, pos);
-                }
-
-                if range.start <= pos
-                    && pos <= range.end
-                    && last_success.map_or(true, |last_success| pos < last_success)
-                    && self.state.visited.insert(pos)
-                {
-                    let new_range = pos..range.end;
-                    let cur_len = locations.len();
-                    if self.run_inner(1, locations, s, new_range, n_groups)? {
-                        if let Some(last_success) = last_success.as_mut() {
-                            debug_assert!(pos < *last_success);
-                            *last_success = pos;
-                            locations.drain(old_len..cur_len);
-                        } else {
-                            last_success = Some(pos);
-                            debug_assert_eq!(old_len, cur_len);
-                        }
-                    }
-                }
-            }
-
-            Ok(last_success.is_some())
-        };
-
-        let r = core(&prefilter);
-
-        match &mut self.prog.body[0] {
-            Insn::Prefilter(prefilter_box) => *prefilter_box = Some(prefilter),
-            _ => unreachable!(),
+        if !prefilter.assert(sb, &range) {
+            return Ok(false);
         }
 
-        r
+        let Some(iter) = prefilter.search(sb, &range) else {
+            for pos in range.start..=range.end {
+                if self.run_inner(1, locations, s, pos..range.end, n_groups)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        };
+        let safe_offset = prefilter.safe_offset().unwrap();
+
+        let mut last_success: Option<usize> = None;
+        let old_len = locations.len();
+        reset_bitset(&mut self.state.visited);
+        'outer: for m in iter {
+            let mut pos = m.position;
+
+            if let Some(last_success) = last_success {
+                let mut cursor = last_success;
+                for _ in safe_offset..0 {
+                    cursor = prev_codepoint_ix(s, cursor);
+                }
+                for _ in 0..safe_offset {
+                    if cursor >= range.end {
+                        break;
+                    }
+                    cursor += codepoint_len_at(s, cursor);
+                }
+                if cursor <= pos {
+                    break;
+                }
+            }
+
+            for _ in m.offset..0 {
+                if pos >= range.end {
+                    continue 'outer;
+                }
+                pos += codepoint_len_at(s, pos);
+            }
+            for _ in 0..m.offset {
+                if pos <= range.start {
+                    continue 'outer;
+                }
+                pos = prev_codepoint_ix(s, pos);
+            }
+
+            if range.start <= pos
+                && pos <= range.end
+                && last_success.map_or(true, |last_success| pos < last_success)
+                && self.state.visited.insert(pos)
+            {
+                let new_range = pos..range.end;
+                let cur_len = locations.len();
+                if self.run_inner(1, locations, s, new_range, n_groups)? {
+                    if let Some(last_success) = last_success.as_mut() {
+                        debug_assert!(pos < *last_success);
+                        *last_success = pos;
+                        locations.drain(old_len..cur_len);
+                    } else {
+                        last_success = Some(pos);
+                        debug_assert_eq!(old_len, cur_len);
+                    }
+                }
+            }
+        }
+
+        Ok(last_success.is_some())
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -865,33 +882,41 @@ impl VM {
     }
 }
 
-/// Run the program with trace printing for debugging.
-#[doc(hidden)]
-pub fn run_trace(prog: Prog, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
-    VM::new(
+fn create_session(prog: Arc<Prog>) -> Session {
+    let state = Machine::create_state(&prog);
+    let machine = Machine::new(
         prog,
         DEFAULT_MAX_STACK,
         DEFAULT_BACKTRACK_LIMIT,
         OPTION_TRACE,
-    )
-    .run(s, range, None)
-}
-
-/// Run the program with default options.
-#[doc(hidden)]
-pub fn run_default(prog: Prog, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
-    VM::new(prog, DEFAULT_MAX_STACK, DEFAULT_BACKTRACK_LIMIT, 0).run(s, range, None)
+    );
+    let session = machine.create_session(state);
+    session
 }
 
 /// Run the program with trace printing for debugging.
 #[doc(hidden)]
-pub fn run_trace_from_pos(prog: Prog, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
+pub fn run_trace(prog: Arc<Prog>, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
+    let mut session = create_session(prog);
+    session.run_with_options(s, range, None, OPTION_TRACE)
+}
+
+/// Run the program with default options.
+#[doc(hidden)]
+pub fn run_default(prog: Arc<Prog>, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
+    let mut session = create_session(prog);
+    session.run(s, range, None)
+}
+
+/// Run the program with trace printing for debugging.
+#[doc(hidden)]
+pub fn run_trace_from_pos(prog: Arc<Prog>, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
     run_trace(prog, s, pos..s.len())
 }
 
 /// Run the program with default options.
 #[doc(hidden)]
-pub fn run_default_from_pos(prog: Prog, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
+pub fn run_default_from_pos(prog: Arc<Prog>, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
     run_default(prog, s, pos..s.len())
 }
 
@@ -940,15 +965,10 @@ mod tests {
 
     #[test]
     fn state_push_pop() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 1,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 1,
+        }));
 
         vm.push(0, 0).unwrap();
         vm.push(1, 1).unwrap();
@@ -963,15 +983,10 @@ mod tests {
 
     #[test]
     fn state_save_override() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 1,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 1,
+        }));
         vm.save(0, 10);
         vm.push(0, 0).unwrap();
         vm.save(0, 20);
@@ -981,15 +996,10 @@ mod tests {
 
     #[test]
     fn state_save_override_twice() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 1,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 1,
+        }));
         vm.save(0, 10);
         vm.push(0, 0).unwrap();
         vm.save(0, 20);
@@ -1005,15 +1015,10 @@ mod tests {
 
     #[test]
     fn state_explicit_stack() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 1,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 1,
+        }));
         vm.stack_push(11);
         vm.stack_push(12);
 
@@ -1030,15 +1035,10 @@ mod tests {
 
     #[test]
     fn state_backtrack_cut_simple() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 2,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 2,
+        }));
         vm.save(0, 1);
         vm.save(1, 2);
 
@@ -1056,15 +1056,10 @@ mod tests {
 
     #[test]
     fn state_backtrack_cut_complex() {
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: 2,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: 2,
+        }));
         vm.save(0, 1);
         vm.save(1, 2);
 
@@ -1129,15 +1124,10 @@ mod tests {
         let mut stack = Vec::new();
         let mut saves = vec![usize::MAX; slots];
 
-        let mut vm = VM::new(
-            Prog {
-                body: Vec::new(),
-                n_saves: slots,
-            },
-            DEFAULT_MAX_STACK,
-            DEFAULT_BACKTRACK_LIMIT,
-            0,
-        );
+        let mut vm = create_session(Arc::new(Prog {
+            body: Vec::new(),
+            n_saves: slots,
+        }));
 
         let mut expected = Vec::new();
         let mut actual = Vec::new();

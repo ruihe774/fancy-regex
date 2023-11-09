@@ -24,6 +24,7 @@ use regex_automata::meta::Regex as RaRegex;
 use regex_automata::meta::{Builder as RaBuilder, Config as RaConfig};
 use std::borrow::Borrow;
 use std::collections::VecDeque;
+use std::sync::Arc;
 #[cfg(test)]
 use std::{collections::BTreeMap, sync::RwLock};
 
@@ -114,7 +115,7 @@ impl Compiler {
         if self.options.anchored {
             self.visit(info, false)?;
         } else if let Some(prefilter) = info.hard.then(|| Prefilter::new(info)).flatten() {
-            self.b.add(Insn::Prefilter(Some(Box::new(prefilter))));
+            self.b.add(Insn::Prefilter(Arc::new(prefilter)));
             self.visit(info, false)?;
         } else {
             let any = Expr::Any {

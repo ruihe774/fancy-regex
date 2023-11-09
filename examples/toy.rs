@@ -24,6 +24,7 @@ use fancy_regex::internal::{analyze, compile, run_trace_from_pos, Insn, Prog};
 use fancy_regex::*;
 use std::env;
 use std::str::FromStr;
+use std::sync::Arc;
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -80,7 +81,7 @@ fn main() {
             if let Some(re) = args.next() {
                 let tree = Expr::parse_tree(&re).unwrap();
                 let a = analyze(&tree).unwrap();
-                let p = compile(&a).unwrap();
+                let p = Arc::new(compile(&a).unwrap());
                 if let Some(s) = args.next() {
                     run_trace_from_pos(p, &s, 0).unwrap();
                 }
@@ -119,8 +120,8 @@ fn graph(re: &str) {
     println!("}}");
 }
 
-fn prog(re: &str) -> Prog {
+fn prog(re: &str) -> Arc<Prog> {
     let tree = Expr::parse_tree(re).expect("Expected parsing regex to work");
     let result = analyze(&tree).expect("Expected analyze to succeed");
-    compile(&result).expect("Expected compile to succeed")
+    Arc::new(compile(&result).expect("Expected compile to succeed"))
 }
