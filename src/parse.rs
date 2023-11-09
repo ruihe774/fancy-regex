@@ -20,6 +20,7 @@
 
 //! A regex parser yielding an AST.
 
+use bit_set::BitSet;
 use compact_str::CompactString;
 use regex_syntax::escape;
 #[cfg(feature = "serde")]
@@ -407,6 +408,8 @@ pub(crate) type NamedGroups = BTreeMap<CompactString, usize>;
 pub struct ExprTree {
     /// The expr
     pub expr: Expr,
+    /// Indexes of groups that are referenced by backrefs
+    pub backrefs: BitSet,
     /// A mapping from group name to group index
     pub named_groups: NamedGroups,
 }
@@ -422,6 +425,7 @@ impl ExprTree {
 #[derive(Debug)]
 pub(crate) struct Parser<'a> {
     re: &'a str, // source
+    backrefs: BitSet,
     flags: u32,
     named_groups: NamedGroups,
     numeric_backrefs: bool,
@@ -443,6 +447,7 @@ impl<'a> Parser<'a> {
         let expr = p.optimize(expr);
         Ok(ExprTree {
             expr,
+            backrefs: p.backrefs,
             named_groups: p.named_groups,
         })
     }
@@ -450,6 +455,7 @@ impl<'a> Parser<'a> {
     fn new(re: &str) -> Parser<'_> {
         Parser {
             re,
+            backrefs: BitSet::new(),
             named_groups: BTreeMap::new(),
             numeric_backrefs: false,
             flags: FLAG_UNICODE,
@@ -621,6 +627,9 @@ impl<'a> Parser<'a> {
             b'(' => self.parse_group(ix, depth),
             b'\\' => {
                 let (next, expr) = self.parse_escape(ix, false)?;
+                if let Expr::Backref(group) = expr {
+                    self.backrefs.insert(group);
+                }
                 Ok((next, expr))
             }
             b'+' | b'*' | b'?' | b'|' | b')' => Ok((ix, Expr::Empty)),
@@ -1093,6 +1102,7 @@ impl<'a> Parser<'a> {
         if end == next {
             // Backreference validity checker
             if let Expr::Backref(group) = condition {
+                self.backrefs.insert(group);
                 return Ok((end + 1, Expr::BackrefExistsCondition(group)));
             } else {
                 return Err(Error::ParseError(

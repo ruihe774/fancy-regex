@@ -498,7 +498,7 @@ impl Regex {
         };
 
         let info = analyze(&tree)?;
-        let prog = Arc::new(compile_with_options(&info, options)?);
+        let prog = Arc::new(compile_with_options(&info, &tree.backrefs, options)?);
         let n_groups = info.end_group;
         let machine = Machine::new(prog.clone(), options.max_stack, options.backtrack_limit, 0);
 

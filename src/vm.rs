@@ -182,6 +182,8 @@ pub enum Insn {
         anchored: bool,
         /// Whether to drop 0th group
         drop_first: bool,
+        /// Whether groups captured by this delegate may be referenced by backrefs
+        backref_target: bool,
     },
     /// Anchor to match at the position where the previous match ended
     ContinueFromPreviousMatchEnd,
@@ -808,6 +810,7 @@ impl Session {
                         end_group,
                         anchored,
                         drop_first,
+                        backref_target,
                     } => {
                         debug_assert!(start_group <= end_group);
                         let input = Input::new(s).span(ix..range.end).anchored(if anchored {
@@ -815,7 +818,7 @@ impl Session {
                         } else {
                             Anchored::No
                         });
-                        if start_group == end_group {
+                        if start_group == end_group || n_groups == Some(0) && !backref_target {
                             // No groups, so we can use faster methods
                             match inner.search_half(&input) {
                                 Some(m) => ix = m.offset(),
@@ -825,16 +828,27 @@ impl Session {
                             // Do we need to check start_group + 1 == end_group && !drop_first for non-capturing search?
                             // No, because regex-automata will check this for us.
                             let offset = usize::from(drop_first);
-                            self.state
-                                .inner_slots
-                                .resize((end_group - start_group + offset) * 2, None);
+                            self.state.inner_slots.resize(
+                                if n_groups == Some(1) && !backref_target {
+                                    2
+                                } else {
+                                    (end_group - start_group + offset) * 2
+                                },
+                                None,
+                            );
                             if inner
                                 .search_slots(&input, &mut self.state.inner_slots)
                                 .is_some()
                             {
                                 for i in 0..(end_group - start_group) {
                                     let slot = (start_group + i) * 2;
-                                    if let Some(start) = self.state.inner_slots[(i + offset) * 2] {
+                                    if let Some(start) = self
+                                        .state
+                                        .inner_slots
+                                        .get((i + offset) * 2)
+                                        .copied()
+                                        .flatten()
+                                    {
                                         let end =
                                             self.state.inner_slots[(i + offset) * 2 + 1].unwrap();
                                         self.save(slot, start.get());

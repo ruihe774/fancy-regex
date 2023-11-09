@@ -81,7 +81,7 @@ fn main() {
             if let Some(re) = args.next() {
                 let tree = Expr::parse_tree(&re).unwrap();
                 let a = analyze(&tree).unwrap();
-                let p = Arc::new(compile(&a).unwrap());
+                let p = Arc::new(compile(&a, &tree.backrefs).unwrap());
                 if let Some(s) = args.next() {
                     run_trace_from_pos(p, &s, 0).unwrap();
                 }
@@ -123,5 +123,5 @@ fn graph(re: &str) {
 fn prog(re: &str) -> Arc<Prog> {
     let tree = Expr::parse_tree(re).expect("Expected parsing regex to work");
     let result = analyze(&tree).expect("Expected analyze to succeed");
-    Arc::new(compile(&result).expect("Expected compile to succeed"))
+    Arc::new(compile(&result, &tree.backrefs).expect("Expected compile to succeed"))
 }

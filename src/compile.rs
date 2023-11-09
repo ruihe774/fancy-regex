@@ -20,6 +20,7 @@
 
 //! Compilation of regexes to VM.
 
+use bit_set::BitSet;
 use regex_automata::meta::Regex as RaRegex;
 use regex_automata::meta::{Builder as RaBuilder, Config as RaConfig};
 use std::borrow::Borrow;
@@ -112,12 +113,12 @@ impl Compiler {
         }
     }
 
-    fn build(mut self, info: &Info<'_>) -> Result<Prog> {
+    fn build(mut self, info: &Info<'_>, backrefs: &BitSet) -> Result<Prog> {
         if self.options.anchored {
-            self.visit(info, false)?;
+            self.visit(info, false, backrefs)?;
         } else if let Some(prefilter) = info.hard.then(|| Prefilter::new(info)).flatten() {
             self.b.add(Insn::Prefilter(Arc::new(prefilter)));
-            self.visit(info, false)?;
+            self.visit(info, false, backrefs)?;
         } else {
             let any = Expr::Any {
                 newline: true,
@@ -165,16 +166,16 @@ impl Compiler {
             };
             // offsets in info are incorrect now
             // however we do not use them in this case
-            self.compile_concat(&[&prefix, info], false)?;
+            self.compile_concat(&[&prefix, info], false, backrefs)?;
         }
         self.b.add(Insn::End);
         Ok(self.b.build())
     }
 
-    fn visit(&mut self, info: &Info<'_>, hard: bool) -> Result<()> {
+    fn visit(&mut self, info: &Info<'_>, hard: bool, backrefs: &BitSet) -> Result<()> {
         if !hard && !info.hard {
             // easy case, delegate entire subexpr
-            return self.compile_delegate(info);
+            return self.compile_delegate(info, backrefs);
         }
         match *info.expr {
             Expr::Empty => (),
@@ -188,23 +189,25 @@ impl Compiler {
                 self.b.add(Insn::Any { newline, crlf });
             }
             Expr::Concat(_) => {
-                self.compile_concat(&info.children, hard)?;
+                self.compile_concat(&info.children, hard, backrefs)?;
             }
             Expr::Alt(_) => {
                 let count = info.children.len();
-                self.compile_alt(count, |compiler, i| compiler.visit(&info.children[i], hard))?;
+                self.compile_alt(count, |compiler, i| {
+                    compiler.visit(&info.children[i], hard, backrefs)
+                })?;
             }
             Expr::Group(_) => {
                 let group = info.start_group;
                 self.b.add(Insn::Save(group * 2));
-                self.visit(&info.children[0], hard)?;
+                self.visit(&info.children[0], hard, backrefs)?;
                 self.b.add(Insn::Save(group * 2 + 1));
             }
             Expr::Repeat { lo, hi, greedy, .. } => {
-                self.compile_repeat(info, lo, hi, greedy, hard)?;
+                self.compile_repeat(info, lo, hi, greedy, hard, backrefs)?;
             }
             Expr::LookAround(_, la) => {
-                self.compile_lookaround(info, la)?;
+                self.compile_lookaround(info, la, backrefs)?;
             }
             Expr::Backref(group) => {
                 self.b.add(Insn::Backref(group * 2));
@@ -216,12 +219,12 @@ impl Compiler {
                 // TODO optimization: atomic insns are not needed if the
                 // child doesn't do any backtracking.
                 self.b.add(Insn::BeginAtomic);
-                self.visit(&info.children[0], false)?;
+                self.visit(&info.children[0], false, backrefs)?;
                 self.b.add(Insn::EndAtomic);
             }
             Expr::Delegate { .. } => {
                 // TODO: might want to have more specialized impls
-                self.compile_delegate(info)?;
+                self.compile_delegate(info, backrefs)?;
             }
             Expr::Assertion(assertion) => {
                 self.b.add(Insn::Assertion(assertion));
@@ -233,7 +236,9 @@ impl Compiler {
                 self.b.add(Insn::ContinueFromPreviousMatchEnd);
             }
             Expr::Conditional { .. } => {
-                self.compile_conditional(|compiler, i| compiler.visit(&info.children[i], hard))?;
+                self.compile_conditional(|compiler, i| {
+                    compiler.visit(&info.children[i], hard, backrefs)
+                })?;
             }
         }
         Ok(())
@@ -314,6 +319,7 @@ impl Compiler {
         &mut self,
         children: &[I],
         hard: bool,
+        backrefs: &BitSet,
     ) -> Result<()> {
         // First: determine a prefix which is constant size and not hard.
         let prefix_end = children
@@ -342,13 +348,13 @@ impl Compiler {
         };
         let suffix_begin = children.len() - suffix_len;
 
-        self.compile_delegates(&children[..prefix_end])?;
+        self.compile_delegates(&children[..prefix_end], backrefs)?;
 
         for child in &children[prefix_end..suffix_begin] {
-            self.visit(child.borrow(), true)?;
+            self.visit(child.borrow(), true, backrefs)?;
         }
 
-        self.compile_delegates(&children[suffix_begin..])
+        self.compile_delegates(&children[suffix_begin..], backrefs)
     }
 
     fn compile_repeat(
@@ -358,6 +364,7 @@ impl Compiler {
         hi: usize,
         greedy: bool,
         hard: bool,
+        backrefs: &BitSet,
     ) -> Result<()> {
         let child = &info.children[0];
         if lo == 0 && hi == 1 {
@@ -367,7 +374,7 @@ impl Compiler {
             // TODO: do we want to do an epsilon check here? If we do
             // it here and in Alt, we might be able to make a good
             // bound on stack depth
-            self.visit(child, hard)?;
+            self.visit(child, hard, backrefs)?;
             let next_pc = self.b.pc();
             self.b.set_split_target(pc, next_pc, greedy);
             return Ok(());
@@ -386,7 +393,7 @@ impl Compiler {
                 check,
                 greedy,
             });
-            self.visit(child, hard)?;
+            self.visit(child, hard, backrefs)?;
             self.b.add(Insn::Jmp(pc));
             let next_pc = self.b.pc();
             self.b.set_repeat_target(pc, next_pc);
@@ -394,14 +401,14 @@ impl Compiler {
             // e*
             let pc = self.b.pc();
             self.b.add(Insn::Split(pc + 1, pc + 1));
-            self.visit(child, hard)?;
+            self.visit(child, hard, backrefs)?;
             self.b.add(Insn::Jmp(pc));
             let next_pc = self.b.pc();
             self.b.set_split_target(pc, next_pc, greedy);
         } else if lo == 1 && hi == usize::MAX {
             // e+
             let pc = self.b.pc();
-            self.visit(child, hard)?;
+            self.visit(child, hard, backrefs)?;
             let next = self.b.pc() + 1;
             let (x, y) = if greedy { (pc, next) } else { (next, pc) };
             self.b.add(Insn::Split(x, y));
@@ -416,7 +423,7 @@ impl Compiler {
                 repeat,
                 greedy,
             });
-            self.visit(child, hard)?;
+            self.visit(child, hard, backrefs)?;
             self.b.add(Insn::Jmp(pc));
             let next_pc = self.b.pc();
             self.b.set_repeat_target(pc, next_pc);
@@ -424,7 +431,12 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_lookaround(&mut self, info: &Info<'_>, la: LookAround) -> Result<()> {
+    fn compile_lookaround(
+        &mut self,
+        info: &Info<'_>,
+        la: LookAround,
+        backrefs: &BitSet,
+    ) -> Result<()> {
         let inner = &info.children[0];
         match la {
             LookBehind => {
@@ -438,10 +450,10 @@ impl Compiler {
                     let alternatives = &inner.children;
                     self.compile_alt(alternatives.len(), |compiler, i| {
                         let alternative = &alternatives[i];
-                        compiler.compile_positive_lookaround(alternative, la)
+                        compiler.compile_positive_lookaround(alternative, la, backrefs)
                     })
                 } else {
-                    self.compile_positive_lookaround(inner, la)
+                    self.compile_positive_lookaround(inner, la, backrefs)
                 }
             }
             LookBehindNeg => {
@@ -454,47 +466,66 @@ impl Compiler {
                     // Make const size by transforming `(?<!a|bb)` to `(?<!a)(?<!bb)`
                     let alternatives = &inner.children;
                     for alternative in alternatives {
-                        self.compile_negative_lookaround(alternative, la)?;
+                        self.compile_negative_lookaround(alternative, la, backrefs)?;
                     }
                     Ok(())
                 } else {
-                    self.compile_negative_lookaround(inner, la)
+                    self.compile_negative_lookaround(inner, la, backrefs)
                 }
             }
-            LookAhead => self.compile_positive_lookaround(inner, la),
-            LookAheadNeg => self.compile_negative_lookaround(inner, la),
+            LookAhead => self.compile_positive_lookaround(inner, la, backrefs),
+            LookAheadNeg => self.compile_negative_lookaround(inner, la, backrefs),
         }
     }
 
-    fn compile_positive_lookaround(&mut self, inner: &Info<'_>, la: LookAround) -> Result<()> {
+    fn compile_positive_lookaround(
+        &mut self,
+        inner: &Info<'_>,
+        la: LookAround,
+        backrefs: &BitSet,
+    ) -> Result<()> {
         let save = self.b.newsave();
         self.b.add(Insn::Save(save));
-        self.compile_lookaround_inner(inner, la)?;
+        self.compile_lookaround_inner(inner, la, backrefs)?;
         self.b.add(Insn::Restore(save));
         Ok(())
     }
 
-    fn compile_negative_lookaround(&mut self, inner: &Info<'_>, la: LookAround) -> Result<()> {
+    fn compile_negative_lookaround(
+        &mut self,
+        inner: &Info<'_>,
+        la: LookAround,
+        backrefs: &BitSet,
+    ) -> Result<()> {
         let pc = self.b.pc();
         self.b.add(Insn::Split(pc + 1, usize::MAX));
-        self.compile_lookaround_inner(inner, la)?;
+        self.compile_lookaround_inner(inner, la, backrefs)?;
         self.b.add(Insn::FailNegativeLookAround);
         let next_pc = self.b.pc();
         self.b.set_split_target(pc, next_pc, true);
         Ok(())
     }
 
-    fn compile_lookaround_inner(&mut self, inner: &Info<'_>, la: LookAround) -> Result<()> {
+    fn compile_lookaround_inner(
+        &mut self,
+        inner: &Info<'_>,
+        la: LookAround,
+        backrefs: &BitSet,
+    ) -> Result<()> {
         if la == LookBehind || la == LookBehindNeg {
             if !inner.const_size {
                 return Err(Error::CompileError(CompileError::LookBehindNotConst));
             }
             self.b.add(Insn::GoBack(inner.min_size));
         }
-        self.visit(inner, false)
+        self.visit(inner, false, backrefs)
     }
 
-    fn compile_delegates<'a, I: Borrow<Info<'a>>>(&mut self, infos: &[I]) -> Result<()> {
+    fn compile_delegates<'a, I: Borrow<Info<'a>>>(
+        &mut self,
+        infos: &[I],
+        backrefs: &BitSet,
+    ) -> Result<()> {
         if infos.is_empty() {
             return Ok(());
         }
@@ -519,7 +550,7 @@ impl Compiler {
             return Ok(());
         }
 
-        let mut delegate_builder = DelegateBuilder::new();
+        let mut delegate_builder = DelegateBuilder::new(backrefs);
         for info in infos {
             delegate_builder.push(info.borrow());
         }
@@ -532,14 +563,14 @@ impl Compiler {
         )
     }
 
-    fn compile_delegate(&mut self, info: &Info) -> Result<()> {
+    fn compile_delegate(&mut self, info: &Info, backrefs: &BitSet) -> Result<()> {
         if let Expr::Literal { val, casei } = info.expr {
             self.b.add(Insn::Lit {
                 val: val.clone(),
                 casei: *casei,
             });
         } else {
-            let mut builder = DelegateBuilder::new();
+            let mut builder = DelegateBuilder::new(backrefs);
             builder.push(info);
             builder.build(
                 RegexOptions {
@@ -588,22 +619,30 @@ pub(crate) fn compile_inner(
 }
 
 /// Compile the analyzed expressions into a program.
-pub fn compile(info: &Info<'_>) -> Result<Prog> {
-    compile_with_options(info, RegexOptions::default())
+pub fn compile(info: &Info<'_>, backrefs: &BitSet) -> Result<Prog> {
+    compile_with_options(info, backrefs, RegexOptions::default())
 }
 
-pub(crate) fn compile_with_options(info: &Info<'_>, options: RegexOptions) -> Result<Prog> {
+pub(crate) fn compile_with_options(
+    info: &Info<'_>,
+    backrefs: &BitSet,
+    options: RegexOptions,
+) -> Result<Prog> {
     let c = Compiler::new(info.end_group, options);
-    c.build(info)
+    c.build(info, backrefs)
 }
 
 struct DelegateBuilder<'a> {
     infos: Vec<&'a Info<'a>>,
+    backrefs: &'a BitSet,
 }
 
 impl<'a> DelegateBuilder<'a> {
-    fn new() -> Self {
-        Self { infos: Vec::new() }
+    fn new(backrefs: &'a BitSet) -> Self {
+        Self {
+            infos: Vec::new(),
+            backrefs,
+        }
     }
 
     fn push(&mut self, info: &'a Info<'a>) {
@@ -663,12 +702,16 @@ impl<'a> DelegateBuilder<'a> {
             },
         )?;
 
+        let backref_target =
+            (start_group..end_group).any(|group_idx| self.backrefs.contains(group_idx));
+
         b.add(Insn::Delegate {
             inner: compiled,
             start_group,
             end_group,
             anchored,
             drop_first,
+            backref_target,
         });
         Ok(())
     }
@@ -700,13 +743,14 @@ mod tests {
                     casei: false,
                 },
             ]),
+            backrefs: BitSet::new(),
             named_groups: Default::default(),
         };
         let info = analyze(&tree).unwrap();
 
         let mut c = Compiler::new(0, RegexOptions::default());
         // Force "hard" so that compiler doesn't just delegate
-        c.visit(&info, true).unwrap();
+        c.visit(&info, true, &tree.backrefs).unwrap();
         c.b.add(Insn::End);
 
         let prog = c.b.prog;
@@ -791,6 +835,7 @@ mod tests {
         let info = analyze(&tree).unwrap();
         let prog = compile_with_options(
             &info,
+            &tree.backrefs,
             RegexOptions {
                 anchored: true,
                 ..RegexOptions::default()
