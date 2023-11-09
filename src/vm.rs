@@ -81,8 +81,8 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::codepoint_len_at;
 use crate::error::RuntimeError;
+use crate::next_codepoint_ix;
 use crate::prefilter::Prefilter;
 use crate::prev_codepoint_ix;
 use crate::Assertion;
@@ -550,7 +550,7 @@ impl Session {
                     if cursor >= range.end {
                         break;
                     }
-                    cursor += codepoint_len_at(s, cursor);
+                    cursor = next_codepoint_ix(s, cursor);
                 }
                 if cursor <= pos {
                     break;
@@ -561,7 +561,7 @@ impl Session {
                 if pos >= range.end {
                     continue 'outer;
                 }
-                pos += codepoint_len_at(s, pos);
+                pos = next_codepoint_ix(s, pos);
             }
             for _ in 0..m.offset {
                 if pos <= range.start {
@@ -639,7 +639,7 @@ impl Session {
                         if ix < range.end
                             && (newline || sb[ix] != b'\n' && (!crlf || sb[ix] != b'\r'))
                         {
-                            ix += codepoint_len_at(sb, ix);
+                            ix = next_codepoint_ix(sb, ix);
                         } else {
                             break 'fail;
                         }

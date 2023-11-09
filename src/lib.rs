@@ -1399,11 +1399,6 @@ fn codepoint_len(b: u8) -> usize {
     }
 }
 
-#[inline]
-fn codepoint_len_at(s: impl AsRef<[u8]>, ix: usize) -> usize {
-    codepoint_len(s.as_ref()[ix])
-}
-
 // precondition: ix > 0
 #[allow(clippy::cast_possible_wrap)]
 #[inline]
@@ -1421,7 +1416,7 @@ fn prev_codepoint_ix(s: impl AsRef<[u8]>, mut ix: usize) -> usize {
 
 #[inline]
 fn next_codepoint_ix(s: impl AsRef<[u8]>, ix: usize) -> usize {
-    ix + codepoint_len_at(s, ix)
+    ix + codepoint_len(s.as_ref()[ix])
 }
 
 // If this returns false, then there is no possible backref in the re
