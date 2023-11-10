@@ -19,7 +19,7 @@ track_caller = []
 partial_parse = []
 perf = ["regex-automata/perf"]
 unicode = ["regex-automata/unicode", "regex-syntax/unicode"]
-serde = ["dep:serde", "compact_str/serde"]
+serde = ["dep:serde", "compact_str/serde", "bit-vec/serde_std"]
 
 [dependencies.regex-automata]
 version = "0.4"
@@ -39,6 +39,7 @@ features = ["derive"]
 [dependencies]
 aho-corasick = "1.1"
 bit-set = "0.5"
+bit-vec = { version = "0.6", optional = true }
 compact_str = "0.7"
 
 [dev-dependencies]

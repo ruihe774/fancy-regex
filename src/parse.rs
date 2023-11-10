@@ -24,7 +24,7 @@ use bit_set::BitSet;
 use compact_str::CompactString;
 use regex_syntax::escape;
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -429,6 +429,13 @@ pub struct ExprTree {
     /// The expr
     pub expr: Expr,
     /// Indexes of groups that are referenced by backrefs
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "serialize_bitset",
+            deserialize_with = "deserialize_bitset"
+        )
+    )]
     pub backrefs: BitSet,
     /// A mapping from group name to group index
     pub named_groups: NamedGroups,
@@ -1427,6 +1434,23 @@ pub(crate) fn make_literal(s: &str) -> Expr {
         val: CompactString::from(s),
         casei: false,
     }
+}
+
+#[cfg(feature = "serde")]
+fn serialize_bitset<S: Serializer>(
+    bitset: &BitSet,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    bitset.get_ref().serialize(serializer)
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_bitset<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<BitSet, D::Error> {
+    Ok(BitSet::from_bit_vec(bit_vec::BitVec::deserialize(
+        deserializer,
+    )?))
 }
 
 #[cfg(test)]
