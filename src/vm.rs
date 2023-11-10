@@ -83,8 +83,10 @@ use std::sync::Arc;
 
 use crate::error::RuntimeError;
 use crate::next_codepoint_ix;
+use crate::next_nth_codepoint_ix;
 use crate::prefilter::Prefilter;
 use crate::prev_codepoint_ix;
+use crate::prev_nth_codepoint_ix;
 use crate::Assertion;
 use crate::Error;
 use crate::Result;
@@ -538,36 +540,43 @@ impl Session {
         let mut last_success: Option<usize> = None;
         let old_len = locations.len();
         reset_bitset(&mut self.state.visited);
-        'outer: for m in iter {
+        for m in iter {
             let mut pos = m.position;
 
             if let Some(last_success) = last_success {
-                let mut cursor = last_success;
-                for _ in safe_offset..0 {
-                    cursor = prev_codepoint_ix(s, cursor);
-                }
-                for _ in 0..safe_offset {
-                    if cursor >= range.end {
-                        break;
-                    }
-                    cursor = next_codepoint_ix(s, cursor);
-                }
+                let cursor = last_success - range.start;
+                let sb = &sb[range.clone()];
+                let Some(cursor) =
+                    prev_nth_codepoint_ix(sb, cursor, 0usize.saturating_add_signed(-safe_offset))
+                else {
+                    break;
+                };
+                let Some(cursor) =
+                    next_nth_codepoint_ix(sb, cursor, 0usize.saturating_add_signed(safe_offset))
+                else {
+                    break;
+                };
+                let cursor = cursor + range.start;
                 if cursor <= pos {
                     break;
                 }
             }
 
-            for _ in m.offset..0 {
-                if pos >= range.end {
-                    continue 'outer;
-                }
-                pos = next_codepoint_ix(s, pos);
-            }
-            for _ in 0..m.offset {
-                if pos <= range.start {
-                    continue 'outer;
-                }
-                pos = prev_codepoint_ix(s, pos);
+            {
+                let cursor = pos - range.start;
+                let sb = &sb[range.clone()];
+                let Some(cursor) =
+                    next_nth_codepoint_ix(sb, cursor, 0usize.saturating_add_signed(-m.offset))
+                else {
+                    continue;
+                };
+                let Some(cursor) =
+                    prev_nth_codepoint_ix(sb, cursor, 0usize.saturating_add_signed(m.offset))
+                else {
+                    continue;
+                };
+                let cursor = cursor + range.start;
+                pos = cursor;
             }
 
             if range.start <= pos

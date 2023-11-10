@@ -186,16 +186,19 @@ mod expand;
 mod parse;
 mod prefilter;
 mod replacer;
+mod utf8util;
 mod vm;
 
 use crate::analyze::analyze;
 use crate::compile::compile_with_options;
 use crate::parse::NamedGroups;
-pub use crate::parse::{Assertion, Expr, ExprTree, LookAround};
 use crate::vm::OPTION_SKIPPED_EMPTY_MATCH;
+
+pub(crate) use crate::utf8util::*;
 
 pub use crate::error::{CompileError, Error, ParseError, Result, RuntimeError};
 pub use crate::expand::Expander;
+pub use crate::parse::{Assertion, Expr, ExprTree, LookAround};
 pub use crate::replacer::{NoExpand, Replacer, ReplacerRef};
 
 const MAX_RECURSION: usize = 64;
@@ -1388,36 +1391,6 @@ impl<'r> ExactSizeIterator for CaptureNames<'r> {
 }
 
 impl<'r> FusedIterator for CaptureNames<'r> {}
-
-#[inline]
-fn codepoint_len(b: u8) -> usize {
-    match b {
-        b if b < 0x80 => 1,
-        b if b < 0xe0 => 2,
-        b if b < 0xf0 => 3,
-        _ => 4,
-    }
-}
-
-// precondition: ix > 0
-#[allow(clippy::cast_possible_wrap)]
-#[inline]
-fn prev_codepoint_ix(s: impl AsRef<[u8]>, mut ix: usize) -> usize {
-    let bytes = s.as_ref();
-    loop {
-        ix -= 1;
-        // fancy bit magic for ranges 0..0x80 + 0xc0..
-        if (bytes[ix] as i8) >= -0x40 {
-            break;
-        }
-    }
-    ix
-}
-
-#[inline]
-fn next_codepoint_ix(s: impl AsRef<[u8]>, ix: usize) -> usize {
-    ix + codepoint_len(s.as_ref()[ix])
-}
 
 // If this returns false, then there is no possible backref in the re
 
