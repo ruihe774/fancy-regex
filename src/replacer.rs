@@ -44,8 +44,8 @@ pub trait Replacer {
     ///     src: &str,
     ///     mut rep: R,
     /// ) -> String {
-    ///     let dst = re.replace_all(src, rep.by_ref());
-    ///     let dst = re.replace_all(&dst, rep.by_ref());
+    ///     let dst = re.replace_all(src, rep.by_ref()).unwrap();
+    ///     let dst = re.replace_all(&dst, rep.by_ref()).unwrap();
     ///     dst.into_owned()
     /// }
     /// ```
@@ -56,7 +56,7 @@ pub trait Replacer {
 
 /// By-reference adaptor for a `Replacer`
 ///
-/// Returned by [`Replacer::by_ref`](trait.Replacer.html#method.by_ref).
+/// Returned by [`Replacer::by_ref`].
 #[derive(Debug)]
 pub struct ReplacerRef<'a, R: ?Sized>(&'a mut R);
 

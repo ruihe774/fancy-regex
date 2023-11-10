@@ -401,6 +401,7 @@ impl Analyzer {
 }
 
 /// Analyze the parsed expression to determine whether it requires fancy features.
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn analyze(tree: &ExprTree) -> Result<Info<'_>> {
     let mut analyzer = Analyzer { group_ix: 0 };
 

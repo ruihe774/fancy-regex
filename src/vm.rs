@@ -81,7 +81,7 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::codepoint_len;
+use crate::codepoint_len_at;
 use crate::error::RuntimeError;
 use crate::prefilter::Prefilter;
 use crate::prev_codepoint_ix;
@@ -906,34 +906,29 @@ fn create_session(prog: Arc<Prog>) -> Session {
 }
 
 /// Run the program with trace printing for debugging.
-#[doc(hidden)]
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn run_trace(prog: Arc<Prog>, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
     let mut session = create_session(prog);
     session.run_with_options(s, range, None, OPTION_TRACE)
 }
 
 /// Run the program with default options.
-#[doc(hidden)]
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn run_default(prog: Arc<Prog>, s: &str, range: Range<usize>) -> Result<Option<Vec<usize>>> {
     let mut session = create_session(prog);
     session.run(s, range, None)
 }
 
 /// Run the program with trace printing for debugging.
-#[doc(hidden)]
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn run_trace_from_pos(prog: Arc<Prog>, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
     run_trace(prog, s, pos..s.len())
 }
 
 /// Run the program with default options.
-#[doc(hidden)]
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn run_default_from_pos(prog: Arc<Prog>, s: &str, pos: usize) -> Result<Option<Vec<usize>>> {
     run_default(prog, s, pos..s.len())
-}
-
-#[inline]
-fn codepoint_len_at(s: impl AsRef<[u8]>, ix: usize) -> usize {
-    codepoint_len(s.as_ref()[ix])
 }
 
 #[inline]

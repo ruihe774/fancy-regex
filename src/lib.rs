@@ -162,8 +162,6 @@ Conditionals - if/then/else:
 #![warn(clippy::pedantic)]
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::if_not_else)]
-#![allow(clippy::missing_errors_doc)] // TODO
-#![allow(clippy::missing_panics_doc)] // TODO
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::redundant_else)]
 #![allow(clippy::similar_names)]
@@ -172,9 +170,11 @@ Conditionals - if/then/else:
 
 use regex_automata::util::pool::{Pool, PoolGuard};
 use std::borrow::Cow;
-use std::fmt::{Debug, Formatter};
+use std::iter::FusedIterator;
+use std::num::NonZeroUsize;
 use std::ops::{Index, Range};
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::slice::ChunksExact;
 use std::str::FromStr;
 use std::sync::Arc;
 use vm::{Machine, Session, DEFAULT_BACKTRACK_LIMIT, DEFAULT_MAX_STACK};
@@ -202,10 +202,6 @@ const MAX_RECURSION: usize = 64;
 
 // the public API
 
-/// A builder for a `Regex` to allow configuring options.
-#[derive(Copy, Clone, Debug)]
-pub struct RegexBuilder(RegexOptions);
-
 /// A compiled regular expression.
 #[derive(Debug)]
 pub struct Regex {
@@ -217,271 +213,13 @@ pub struct Regex {
     n_groups: usize,
 }
 
-/// A single match of a regex or group in an input text
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Match<'t> {
-    text: &'t str,
-    start: usize,
-    end: usize,
-}
-
-/// An iterator over all non-overlapping matches for a particular string.
-///
-/// The iterator yields a `Result<Match>`. The iterator stops when no more
-/// matches can be found.
-///
-/// `'r` is the lifetime of the compiled regular expression and `'t` is the
-/// lifetime of the matched string.
-#[derive(Debug)]
-pub struct Matches<'r, 't> {
-    re: &'r Regex,
-    text: &'t str,
-    last_end: usize,
-    last_match: Option<usize>,
-}
-
-impl<'r, 't> Matches<'r, 't> {
-    /// Return the text being searched.
-    #[must_use]
-    pub fn text(&self) -> &'t str {
-        self.text
-    }
-
-    /// Return the underlying regex.
-    #[must_use]
-    pub fn regex(&self) -> &'r Regex {
-        self.re
-    }
-}
-
-impl<'r, 't> Iterator for Matches<'r, 't> {
-    type Item = Result<Match<'t>>;
-
-    /// Adapted from the `regex` crate. Calls `find_from_pos` repeatedly.
-    /// Ignores empty matches immediately after a match.
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.last_end > self.text.len() {
-            return None;
-        }
-
-        let option_flags = if let Some(last_match) = self.last_match {
-            if self.last_end > last_match {
-                OPTION_SKIPPED_EMPTY_MATCH
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-        let mat =
-            match self
-                .re
-                .find_from_pos_with_option_flags(self.text, self.last_end, option_flags)
-            {
-                Err(error) => return Some(Err(error)),
-                Ok(None) => return None,
-                Ok(Some(mat)) => mat,
-            };
-
-        if mat.start == mat.end {
-            // This is an empty match. To ensure we make progress, start
-            // the next search at the smallest possible starting position
-            // of the next match following this one.
-            self.last_end = next_utf8(self.text, mat.end);
-            // Don't accept empty matches immediately following a match.
-            // Just move on to the next match.
-            if Some(mat.end) == self.last_match {
-                return self.next();
-            }
-        } else {
-            self.last_end = mat.end;
-        }
-
-        self.last_match = Some(mat.end);
-
-        Some(Ok(mat))
-    }
-}
-
-/// An iterator that yields all non-overlapping capture groups matching a
-/// particular regular expression.
-///
-/// The iterator stops when no more matches can be found.
-///
-/// `'r` is the lifetime of the compiled regular expression and `'t` is the
-/// lifetime of the matched string.
-#[derive(Debug)]
-pub struct CaptureMatches<'r, 't>(Matches<'r, 't>);
-
-impl<'r, 't> CaptureMatches<'r, 't> {
-    /// Return the text being searched.
-    #[must_use]
-    pub fn text(&self) -> &'t str {
-        self.0.text
-    }
-
-    /// Return the underlying regex.
-    #[must_use]
-    pub fn regex(&self) -> &'r Regex {
-        self.0.re
-    }
-}
-
-impl<'r, 't> Iterator for CaptureMatches<'r, 't> {
-    type Item = Result<Captures<'r, 't>>;
-
-    /// Adapted from the `regex` crate. Calls `captures_from_pos` repeatedly.
-    /// Ignores empty matches immediately after a match.
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.0.last_end > self.0.text.len() {
-            return None;
-        }
-
-        let captures = match self.0.re.captures_from_pos(self.0.text, self.0.last_end) {
-            Err(error) => return Some(Err(error)),
-            Ok(None) => return None,
-            Ok(Some(captures)) => captures,
-        };
-
-        let mat = captures
-            .get(0)
-            .expect("`Captures` is expected to have entire match at 0th position");
-        if mat.start == mat.end {
-            self.0.last_end = next_utf8(self.0.text, mat.end);
-            if Some(mat.end) == self.0.last_match {
-                return self.next();
-            }
-        } else {
-            self.0.last_end = mat.end;
-        }
-
-        self.0.last_match = Some(mat.end);
-
-        Some(Ok(captures))
-    }
-}
-
-/// A set of capture groups found for a regex.
-#[derive(Debug)]
-pub struct Captures<'r, 't> {
-    text: &'t str,
-    saves: PoolGuard<'r, Vec<usize>, fn() -> Vec<usize>>,
-    named_groups: &'r NamedGroups,
-}
-
-/// Iterator for captured groups in order in which they appear in the regex.
-#[derive(Debug)]
-pub struct SubCaptureMatches<'r, 't> {
-    caps: &'r Captures<'r, 't>,
-    i: usize,
-}
-
-#[derive(Clone, Debug)]
-enum RegexSource {
-    Pattern(String),
-    ExprTree(ExprTree),
-}
-
-#[derive(Copy, Clone, Debug)]
-struct RegexOptions {
-    anchored: bool,
-    max_stack: usize,
-    backtrack_limit: usize,
-    delegate_size_limit: Option<usize>,
-    delegate_dfa_size_limit: Option<usize>,
-}
-
-impl Default for RegexOptions {
-    fn default() -> Self {
-        RegexOptions {
-            anchored: false,
-            max_stack: DEFAULT_MAX_STACK,
-            backtrack_limit: DEFAULT_BACKTRACK_LIMIT,
-            delegate_size_limit: None,
-            delegate_dfa_size_limit: None,
-        }
-    }
-}
-
-impl Default for RegexBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RegexBuilder {
-    /// Create a new regex builder with a regex pattern.
-    ///
-    /// If the pattern is invalid, the call to `build` will fail later.
-    #[must_use]
-    pub fn new() -> Self {
-        RegexBuilder(RegexOptions::default())
-    }
-
-    /// Build the `Regex`.
-    ///
-    /// Returns an [`Error`](enum.Error.html) if the pattern could not be parsed.
-    pub fn build(&self, pattern: impl Into<String>) -> Result<Regex> {
-        Regex::new_with_source_and_options(RegexSource::Pattern(pattern.into()), self.0)
-    }
-
-    /// Build the `Regex` from `Expr`
-    pub fn build_from_expr_tree(&self, expr_tree: impl Into<ExprTree>) -> Result<Regex> {
-        Regex::new_with_source_and_options(RegexSource::ExprTree(expr_tree.into()), self.0)
-    }
-
-    /// Limit for how many times backtracking should be attempted for fancy regexes (where
-    /// backtracking is used). If this limit is exceeded, execution returns an error with
-    /// [`Error::BacktrackLimitExceeded`](enum.Error.html#variant.BacktrackLimitExceeded).
-    /// This is for preventing a regex with catastrophic backtracking to run for too long.
-    ///
-    /// Default is `1_000_000` (1 million).
-    pub fn backtrack_limit(&mut self, limit: usize) -> &mut Self {
-        self.0.backtrack_limit = limit;
-        self
-    }
-
-    /// Limit the stack height
-    pub fn max_stack(&mut self, limit: usize) -> &mut Self {
-        self.0.max_stack = limit;
-        self
-    }
-
-    /// Set the approximate size limit of the compiled regular expression.
-    ///
-    /// This option is forwarded from the wrapped `regex` crate. Note that depending on the used
-    /// regex features there may be multiple delegated sub-regexes fed to the `regex` crate. As
-    /// such the actual limit is closer to `<number of delegated regexes> * delegate_size_limit`.
-    pub fn delegate_size_limit(&mut self, limit: usize) -> &mut Self {
-        self.0.delegate_size_limit = Some(limit);
-        self
-    }
-
-    /// Set the approximate size of the cache used by the DFA.
-    ///
-    /// This option is forwarded from the wrapped `regex` crate. Note that depending on the used
-    /// regex features there may be multiple delegated sub-regexes fed to the `regex` crate. As
-    /// such the actual limit is closer to `<number of delegated regexes> *
-    /// delegate_dfa_size_limit`.
-    pub fn delegate_dfa_size_limit(&mut self, limit: usize) -> &mut Self {
-        self.0.delegate_dfa_size_limit = Some(limit);
-        self
-    }
-}
-
-impl FromStr for Regex {
-    type Err = Error;
-
-    /// Attempts to parse a string into a regular expression
-    fn from_str(s: &str) -> Result<Regex> {
-        Regex::new(s)
-    }
-}
-
 impl Regex {
-    /// Parse and compile a regex with default options, see `RegexBuilder`.
+    /// Parse and compile a regex with default options, see [`RegexBuilder`].
     ///
-    /// Returns an [`Error`](enum.Error.html) if the pattern could not be parsed.
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the pattern could not be parsed.
+    #[inline]
     pub fn new(re: impl Into<String>) -> Result<Regex> {
         RegexBuilder::new().build(re)
     }
@@ -520,8 +258,13 @@ impl Regex {
         })
     }
 
-    /// Returns the original string of this regex.
+    /// Returns the original pattern string used to create this regex.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this regex is created by [`RegexBuilder::build_from_expr_tree()`].
     #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         self.pattern
             .as_ref()
@@ -529,8 +272,9 @@ impl Regex {
             .as_str()
     }
 
-    /// Returns the expr tree of this regex.
+    /// Returns the expression tree of this regex.
     #[must_use]
+    #[inline]
     pub fn as_expr_tree(&self) -> &ExprTree {
         &self.tree
     }
@@ -543,10 +287,14 @@ impl Regex {
     ///
     /// ```rust
     /// # use fancy_regex::Regex;
-    ///
     /// let re = Regex::new(r"(\w+) \1").unwrap();
     /// assert!(re.is_match("mirror mirror on the wall").unwrap());
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn is_match(&self, text: &str) -> Result<bool> {
         let result = self.session.get().run(text, 0..text.len(), Some(0))?;
         Ok(result.is_some())
@@ -554,8 +302,7 @@ impl Regex {
 
     /// Returns an iterator for each successive non-overlapping match in `text`.
     ///
-    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures_iter`()]
-    /// method.
+    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures_iter()`] method.
     ///
     /// # Example
     ///
@@ -563,7 +310,6 @@ impl Regex {
     ///
     /// ```rust
     /// # use fancy_regex::Regex;
-    ///
     /// let re = Regex::new(r"\w+(?=!)").unwrap();
     /// let mut matches = re.find_iter("so fancy! even with! iterators!");
     /// assert_eq!(matches.next().unwrap().unwrap().as_str(), "fancy");
@@ -572,6 +318,7 @@ impl Regex {
     /// assert!(matches.next().is_none());
     /// ```
     #[must_use]
+    #[inline]
     pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Matches<'r, 't> {
         Matches {
             re: self,
@@ -583,8 +330,7 @@ impl Regex {
 
     /// Find the first match in the input text.
     ///
-    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures`()]
-    /// method.
+    /// If you have capturing groups in your regex that you want to extract, use the [`Regex::captures()`] method.
     ///
     /// # Example
     ///
@@ -592,10 +338,14 @@ impl Regex {
     ///
     /// ```rust
     /// # use fancy_regex::Regex;
-    ///
     /// let re = Regex::new(r"\w+(?=!)").unwrap();
     /// assert_eq!(re.find("so fancy!").unwrap().unwrap().as_str(), "fancy");
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn find<'t>(&self, text: &'t str) -> Result<Option<Match<'t>>> {
         self.find_from_pos(text, 0)
     }
@@ -617,7 +367,11 @@ impl Regex {
     /// ```
     ///
     /// Note that in some cases this is not the same as using the `find`
-    /// method and passing a slice of the string, see [`Regex::captures_from_pos`()] for details.
+    /// method and passing a slice of the string, see [`Regex::captures_from_pos()`] for details.
+    ///
+    /// # Errors
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn find_from_pos<'t>(&self, text: &'t str, pos: usize) -> Result<Option<Match<'t>>> {
         self.find_from_pos_with_option_flags(text, pos, 0)
     }
@@ -632,7 +386,11 @@ impl Regex {
             self.session
                 .get()
                 .run_with_options(text, pos..text.len(), Some(1), option_flags)?;
-        Ok(result.map(|saves| Match::new(text, saves[0], saves[1])))
+        Ok(result.map(|saves| Match {
+            text,
+            start: saves[0],
+            end: saves[1],
+        }))
     }
 
     /// Returns an iterator over all the non-overlapping capture groups matched in `text`.
@@ -643,7 +401,6 @@ impl Regex {
     ///
     /// ```rust
     /// # use fancy_regex::Regex;
-    ///
     /// let re = Regex::new(r"(\d{4})-(\d{2})").unwrap();
     /// let text = "It was between 2018-04 and 2020-01";
     /// let mut all_captures = re.captures_iter(text);
@@ -661,6 +418,7 @@ impl Regex {
     /// assert!(all_captures.next().is_none());
     /// ```
     #[must_use]
+    #[inline]
     pub fn captures_iter<'r, 't>(&'r self, text: &'t str) -> CaptureMatches<'r, 't> {
         CaptureMatches(self.find_iter(text))
     }
@@ -675,7 +433,6 @@ impl Regex {
     ///
     /// ```rust
     /// # use fancy_regex::Regex;
-    ///
     /// let re = Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap();
     /// let text = "The date was 2018-04-07";
     /// let captures = re.captures(text).unwrap().unwrap();
@@ -685,6 +442,11 @@ impl Regex {
     /// assert_eq!(captures.get(3).unwrap().as_str(), "07");
     /// assert_eq!(captures.get(0).unwrap().as_str(), "2018-04-07");
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn captures<'r, 't>(&'r self, text: &'t str) -> Result<Option<Captures<'r, 't>>> {
         self.captures_from_pos(text, 0)
     }
@@ -708,14 +470,14 @@ impl Regex {
     /// assert_eq!(group.end(), 12);
     /// ```
     ///
-    /// Note that in some cases this is not the same as using the `captures`
+    /// Note that in some cases this is not the same as using the [`Regex::captures`]
     /// method and passing a slice of the string, see the capture that we get
     /// when we do this:
     ///
     /// ```
     /// # use fancy_regex::Regex;
-    /// let re = Regex::new(r"(?m:^)(\d+)").unwrap();
-    /// let text = "1 test 123\n2 foo";
+    /// # let re = Regex::new(r"(?m:^)(\d+)").unwrap();
+    /// # let text = "1 test 123\n2 foo";
     /// let captures = re.captures(&text[7..]).unwrap().unwrap();
     /// assert_eq!(captures.get(1).unwrap().as_str(), "123");
     /// ```
@@ -723,6 +485,10 @@ impl Regex {
     /// This matched the number "123" because it's at the beginning of the text
     /// of the string slice.
     ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn captures_from_pos<'r, 't>(
         &'r self,
         text: &'t str,
@@ -732,12 +498,52 @@ impl Regex {
     }
 
     /// Returns the capture groups for the first match in `text`
-    /// within the specified byte range `range`.
+    /// within the specified `range`.
+    /// The `start` and `end` of `range` are treated as byte positions in `text`.
+    ///
+    /// # Example
+    ///
+    /// Finding captures within a range:
+    ///
+    /// ```
+    /// # use fancy_regex::Regex;
+    /// let re = Regex::new(r"\<(\w+)\>").unwrap();
+    /// let text = "The quick brown fox";
+    ///
+    /// let captures = re.captures_within_range(text, 1..11).unwrap().unwrap();
+    /// let group = captures.get(1).unwrap();
+    /// assert_eq!(group.as_str(), "quick");
+    /// assert_eq!(group.start(), 4);
+    /// assert_eq!(group.end(), 9);
+    ///
+    /// let captures = re.captures_within_range(text, 5..11).unwrap();
+    /// assert!(captures.is_none());
+    /// ```
+    ///
+    /// Note that in some cases this is not the same as using the [`Regex::captures`]
+    /// method and passing a slice of the string, see the capture that we get
+    /// when we do this:
+    ///
+    /// ```
+    /// # use fancy_regex::Regex;
+    /// # let re = Regex::new(r"\<(\w+)\>").unwrap();
+    /// # let text = "The quick brown fox";
+    /// let captures = re.captures(&text[5..11]).unwrap();
+    /// assert!(captures.is_some());
+    /// let group = captures.unwrap().get(1).unwrap();
+    /// assert_eq!(group.as_str(), "uick");
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
     pub fn captures_within_range<'r, 't>(
         &'r self,
         text: &'t str,
-        range: Range<usize>,
+        range: impl Into<Range<usize>>,
     ) -> Result<Option<Captures<'r, 't>>> {
+        let range = range.into();
         let named_groups = &self.tree.named_groups;
         let mut saves = self.saves.get();
         saves.clear();
@@ -754,12 +560,16 @@ impl Regex {
 
     /// Returns the number of captures, including the implicit capture of the entire expression.
     #[must_use]
+    #[inline]
     pub fn captures_len(&self) -> usize {
         self.n_groups
     }
 
     /// Returns an iterator over the capture names.
+    ///
+    /// This method allocate and create a new [`CaptureNames`] every time it is called.
     #[must_use]
+    #[inline]
     pub fn capture_names(&self) -> CaptureNames {
         let mut names = Vec::new();
         names.resize(self.captures_len(), None);
@@ -810,7 +620,7 @@ impl Regex {
     /// ```rust
     /// # use fancy_regex::Regex;
     /// let re = Regex::new("[^01]+").unwrap();
-    /// assert_eq!(re.replace("1078910", ""), "1010");
+    /// assert_eq!(re.replace("1078910", "").unwrap(), "1010");
     /// ```
     ///
     /// But anything satisfying the `Replacer` trait will work. For example,
@@ -824,7 +634,7 @@ impl Regex {
     /// let result = re.replace("Springsteen, Bruce", |caps: &Captures| {
     ///     format!("{} {}", &caps[2], &caps[1])
     /// });
-    /// assert_eq!(result, "Bruce Springsteen");
+    /// assert_eq!(result.unwrap(), "Bruce Springsteen");
     /// ```
     ///
     /// But this is a bit cumbersome to use all the time. Instead, a simple
@@ -836,7 +646,7 @@ impl Regex {
     /// # use fancy_regex::Regex;
     /// let re = Regex::new(r"(?P<last>[^,\s]+),\s+(?P<first>\S+)").unwrap();
     /// let result = re.replace("Springsteen, Bruce", "$first $last");
-    /// assert_eq!(result, "Bruce Springsteen");
+    /// assert_eq!(result.unwrap(), "Bruce Springsteen");
     /// ```
     ///
     /// Note that using `$2` instead of `$first` or `$1` instead of `$last`
@@ -851,7 +661,7 @@ impl Regex {
     /// # use fancy_regex::Regex;
     /// let re = Regex::new(r"(?P<first>\w+)\s+(?P<second>\w+)").unwrap();
     /// let result = re.replace("deep fried", "${first}_$second");
-    /// assert_eq!(result, "deep_fried");
+    /// assert_eq!(result.unwrap(), "deep_fried");
     /// ```
     ///
     /// Without the curly braces, the capture group name `first_` would be
@@ -868,10 +678,16 @@ impl Regex {
     ///
     /// let re = Regex::new(r"(?P<last>[^,\s]+),\s+(\S+)").unwrap();
     /// let result = re.replace("Springsteen, Bruce", NoExpand("$2 $last"));
-    /// assert_eq!(result, "$2 $last");
+    /// assert_eq!(result.unwrap(), "$2 $last");
     /// ```
-    pub fn replace<'t, R: Replacer>(&self, text: &'t str, rep: R) -> Cow<'t, str> {
-        self.replacen(text, 1, rep)
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[allow(clippy::missing_panics_doc)] // this cannot panic
+    #[inline]
+    pub fn replace<'t, R: Replacer>(&self, text: &'t str, rep: R) -> Result<Cow<'t, str>> {
+        self.replacen(text, Some(NonZeroUsize::new(1).unwrap()), rep)
     }
 
     /// Replaces all non-overlapping matches in `text` with the replacement
@@ -880,22 +696,32 @@ impl Regex {
     ///
     /// See the documentation for `replace` for details on how to access
     /// capturing group matches in the replacement string.
-    pub fn replace_all<'t, R: Replacer>(&self, text: &'t str, rep: R) -> Cow<'t, str> {
-        self.replacen(text, 0, rep)
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[inline]
+    pub fn replace_all<'t, R: Replacer>(&self, text: &'t str, rep: R) -> Result<Cow<'t, str>> {
+        self.replacen(text, None, rep)
     }
 
     /// Replaces at most `limit` non-overlapping matches in `text` with the
-    /// replacement provided. If `limit` is 0, then all non-overlapping matches
+    /// replacement provided. If `limit` is `None`, then all non-overlapping matches
     /// are replaced.
     ///
     /// See the documentation for `replace` for details on how to access
     /// capturing group matches in the replacement string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::RuntimeError`] for any runtime error occurred.
+    #[allow(clippy::missing_panics_doc)] // this cannot panic
     pub fn replacen<'t, R: Replacer>(
         &self,
         text: &'t str,
-        limit: usize,
+        limit: Option<NonZeroUsize>,
         mut rep: R,
-    ) -> Cow<'t, str> {
+    ) -> Result<Cow<'t, str>> {
         // If we know that the replacement doesn't have any capture expansions,
         // then we can fast path. The fast path can make a tremendous
         // difference:
@@ -908,13 +734,13 @@ impl Regex {
         if let Some(rep) = rep.no_expansion() {
             let mut it = self.find_iter(text).enumerate().peekable();
             if it.peek().is_none() {
-                return Cow::Borrowed(text);
+                return Ok(Cow::Borrowed(text));
             }
             let mut new = String::with_capacity(text.len());
             let mut last_match = 0;
             for (i, m) in it {
-                let m = m.unwrap();
-                if limit > 0 && i >= limit {
+                let m = m?;
+                if limit.map_or(false, |limit| i >= limit.into()) {
                     break;
                 }
                 new.push_str(&text[last_match..m.start()]);
@@ -922,20 +748,20 @@ impl Regex {
                 last_match = m.end();
             }
             new.push_str(&text[last_match..]);
-            return Cow::Owned(new);
+            return Ok(Cow::Owned(new));
         }
 
         // The slower path, which we use if the replacement needs access to
         // capture groups.
         let mut it = self.captures_iter(text).enumerate().peekable();
         if it.peek().is_none() {
-            return Cow::Borrowed(text);
+            return Ok(Cow::Borrowed(text));
         }
         let mut new = String::with_capacity(text.len());
         let mut last_match = 0;
         for (i, cap) in it {
-            let cap = cap.unwrap();
-            if limit > 0 && i >= limit {
+            let cap = cap?;
+            if limit.map_or(false, |limit| i >= limit.into()) {
                 break;
             }
             // unwrap on 0 is OK because captures only reports matches
@@ -945,7 +771,7 @@ impl Regex {
             last_match = m.end();
         }
         new.push_str(&text[last_match..]);
-        Cow::Owned(new)
+        Ok(Cow::Owned(new))
     }
 }
 
@@ -977,44 +803,179 @@ impl Clone for Regex {
     }
 }
 
+impl FromStr for Regex {
+    type Err = Error;
+
+    /// Attempts to parse a string into a regular expression
+    fn from_str(s: &str) -> Result<Regex> {
+        Regex::new(s)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum RegexSource {
+    Pattern(String),
+    ExprTree(ExprTree),
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RegexOptions {
+    anchored: bool,
+    max_stack: usize,
+    backtrack_limit: usize,
+    delegate_size_limit: Option<usize>,
+    delegate_dfa_size_limit: Option<usize>,
+}
+
+impl Default for RegexOptions {
+    fn default() -> Self {
+        RegexOptions {
+            anchored: false,
+            max_stack: DEFAULT_MAX_STACK,
+            backtrack_limit: DEFAULT_BACKTRACK_LIMIT,
+            delegate_size_limit: None,
+            delegate_dfa_size_limit: None,
+        }
+    }
+}
+
+/// A builder for a `Regex` to allow configuring options.
+#[derive(Debug, Copy, Clone, Default)]
+pub struct RegexBuilder(RegexOptions);
+
+impl RegexBuilder {
+    /// Create a new regex builder with default options.
+    #[must_use]
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build the [`Regex`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the pattern could not be parsed or compiled.
+    #[inline]
+    pub fn build(&self, pattern: impl Into<String>) -> Result<Regex> {
+        Regex::new_with_source_and_options(RegexSource::Pattern(pattern.into()), self.0)
+    }
+
+    /// Build the [`Regex`] from an [`ExprTree`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the pattern could not be compiled.
+    #[inline]
+    pub fn build_from_expr_tree(&self, expr_tree: impl Into<ExprTree>) -> Result<Regex> {
+        Regex::new_with_source_and_options(RegexSource::ExprTree(expr_tree.into()), self.0)
+    }
+
+    /// Limit for how many times backtracking should be attempted for fancy regexes (where
+    /// backtracking is used). If this limit is exceeded, execution returns an
+    /// [`Error::RuntimeError`] with [`RuntimeError::BacktrackLimitExceeded`].
+    /// This is for preventing a regex with catastrophic backtracking to run for too long.
+    ///
+    /// Default is `1_000_000` (1 million).
+    #[inline]
+    pub fn backtrack_limit(&mut self, limit: usize) -> &mut Self {
+        self.0.backtrack_limit = limit;
+        self
+    }
+
+    /// Limit the stack height of the virtual machine when running for fancy regexes (where
+    /// backtracking is used). If this limit is exceeded, execution returns an
+    /// [`Error::RuntimeError`] with [`RuntimeError::StackOverflow`].
+    /// This is for preventing a regex with catastrophic backtracking to comsume too many memory.
+    ///
+    /// Default is `1_000_000` (1 million).
+    #[inline]
+    pub fn max_stack(&mut self, limit: usize) -> &mut Self {
+        self.0.max_stack = limit;
+        self
+    }
+
+    /// Set the approximate size limit of the compiled regular expression.
+    ///
+    /// This option is forwarded from the wrapped `regex` crate. Note that depending on the used
+    /// regex features there may be multiple delegated sub-regexes fed to the `regex` crate. As
+    /// such the actual limit is closer to `<number of delegated regexes> * delegate_size_limit`.
+    #[inline]
+    pub fn delegate_size_limit(&mut self, limit: usize) -> &mut Self {
+        self.0.delegate_size_limit = Some(limit);
+        self
+    }
+
+    /// Set the approximate size of the cache used by the DFA.
+    ///
+    /// This option is forwarded from the wrapped `regex` crate. Note that depending on the used
+    /// regex features there may be multiple delegated sub-regexes fed to the `regex` crate. As
+    /// such the actual limit is closer to `<number of delegated regexes> *
+    /// delegate_dfa_size_limit`.
+    #[inline]
+    pub fn delegate_dfa_size_limit(&mut self, limit: usize) -> &mut Self {
+        self.0.delegate_dfa_size_limit = Some(limit);
+        self
+    }
+}
+
+/// A single match of a regex or group in an input text
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Match<'t> {
+    text: &'t str,
+    start: usize,
+    end: usize,
+}
+
 impl<'t> Match<'t> {
     /// Returns the starting byte offset of the match in the text.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn start(&self) -> usize {
         self.start
     }
 
     /// Returns the ending byte offset of the match in the text.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn end(&self) -> usize {
         self.end
     }
 
     /// Returns the range over the starting and ending byte offsets of the match in text.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn range(&self) -> Range<usize> {
         self.start..self.end
     }
 
     /// Returns the matched text.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &'t str {
         &self.text[self.start..self.end]
     }
 
-    /// Creates a new match from the given text and byte offsets.
-    fn new(text: &'t str, start: usize, end: usize) -> Match<'t> {
-        Match { text, start, end }
+    /// Returns the length, in bytes, of this match.
+    #[must_use]
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.range().len()
+    }
+
+    /// Returns true if and only if this match has a length of zero.
+    ///
+    /// Note that an empty match can only occur when the regex itself can match the empty string.
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.range().is_empty()
     }
 }
 
-impl<'t> From<Match<'t>> for &'t str {
-    fn from(m: Match<'t>) -> &'t str {
-        m.as_str()
+impl<'t> AsRef<str> for Match<'t> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
     }
 }
 
@@ -1024,6 +985,167 @@ impl<'t> From<Match<'t>> for Range<usize> {
     }
 }
 
+/// An iterator over all non-overlapping matches for a particular string.
+///
+/// The iterator yields a `Result<Match>`. The iterator stops when no more
+/// matches can be found.
+///
+/// `'r` is the lifetime of the compiled regular expression and `'t` is the
+/// lifetime of the matched string.
+///
+/// Note that this iterator does not implement [`FusedIterator`].
+#[derive(Debug, Clone)]
+pub struct Matches<'r, 't> {
+    re: &'r Regex,
+    text: &'t str,
+    last_end: usize,
+    last_match: Option<usize>,
+}
+
+impl<'r, 't> Matches<'r, 't> {
+    /// Return the text being searched.
+    #[must_use]
+    #[inline]
+    pub fn text(&self) -> &'t str {
+        self.text
+    }
+
+    /// Return the underlying regex.
+    #[must_use]
+    #[inline]
+    pub fn regex(&self) -> &'r Regex {
+        self.re
+    }
+}
+
+impl<'r, 't> Iterator for Matches<'r, 't> {
+    type Item = Result<Match<'t>>;
+
+    /// Adapted from the `regex` crate. Calls `find_from_pos` repeatedly.
+    /// Ignores empty matches immediately after a match.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.last_end > self.text.len() {
+            return None;
+        }
+
+        let option_flags = match self.last_match {
+            Some(last_match) if self.last_end > last_match => OPTION_SKIPPED_EMPTY_MATCH,
+            _ => 0,
+        };
+
+        let mat =
+            match self
+                .re
+                .find_from_pos_with_option_flags(self.text, self.last_end, option_flags)
+            {
+                Err(error) => return Some(Err(error)),
+                Ok(None) => return None,
+                Ok(Some(mat)) => mat,
+            };
+
+        if mat.start == mat.end {
+            // This is an empty match. To ensure we make progress, start
+            // the next search at the smallest possible starting position
+            // of the next match following this one.
+            self.last_end = next_codepoint_ix(self.text, mat.end);
+            // Don't accept empty matches immediately following a match.
+            // Just move on to the next match.
+            if Some(mat.end) == self.last_match {
+                return self.next();
+            }
+        } else {
+            self.last_end = mat.end;
+        }
+
+        self.last_match = Some(mat.end);
+
+        Some(Ok(mat))
+    }
+}
+
+/// An iterator that yields all non-overlapping capture groups matching a
+/// particular regular expression.
+///
+/// The iterator yields a `Result<Captures>`. The iterator stops when no
+/// more matches can be found.
+///
+/// `'r` is the lifetime of the compiled regular expression and `'t` is the
+/// lifetime of the matched string.
+///
+/// Note that this iterator does not implement [`FusedIterator`].
+#[derive(Debug, Clone)]
+pub struct CaptureMatches<'r, 't>(Matches<'r, 't>);
+
+impl<'r, 't> CaptureMatches<'r, 't> {
+    /// Return the text being searched.
+    #[must_use]
+    #[inline]
+    pub fn text(&self) -> &'t str {
+        self.0.text
+    }
+
+    /// Return the underlying regex.
+    #[must_use]
+    #[inline]
+    pub fn regex(&self) -> &'r Regex {
+        self.0.re
+    }
+}
+
+impl<'r, 't> Iterator for CaptureMatches<'r, 't> {
+    type Item = Result<Captures<'r, 't>>;
+
+    /// Adapted from the `regex` crate. Calls `captures_from_pos` repeatedly.
+    /// Ignores empty matches immediately after a match.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0.last_end > self.0.text.len() {
+            return None;
+        }
+
+        let captures = match self.0.re.captures_from_pos(self.0.text, self.0.last_end) {
+            Err(error) => return Some(Err(error)),
+            Ok(None) => return None,
+            Ok(Some(captures)) => captures,
+        };
+
+        let mat = captures
+            .get(0)
+            .expect("`Captures` is expected to have entire match at 0th position");
+        if mat.start == mat.end {
+            self.0.last_end = next_codepoint_ix(self.0.text, mat.end);
+            if Some(mat.end) == self.0.last_match {
+                return self.next();
+            }
+        } else {
+            self.0.last_end = mat.end;
+        }
+
+        self.0.last_match = Some(mat.end);
+
+        Some(Ok(captures))
+    }
+}
+
+impl<'r, 't> From<Matches<'r, 't>> for CaptureMatches<'r, 't> {
+    fn from(value: Matches<'r, 't>) -> Self {
+        CaptureMatches(value)
+    }
+}
+
+impl<'r, 't> From<CaptureMatches<'r, 't>> for Matches<'r, 't> {
+    fn from(value: CaptureMatches<'r, 't>) -> Self {
+        value.0
+    }
+}
+
+/// A set of capture groups found for a regex.
+#[derive(Debug)]
+pub struct Captures<'r, 't> {
+    text: &'t str,
+    saves: PoolGuard<'r, Vec<usize>, fn() -> Vec<usize>>,
+    named_groups: &'r NamedGroups,
+}
+
 #[allow(clippy::len_without_is_empty)] // follow regex's API
 impl<'r, 't> Captures<'r, 't> {
     /// Get the capture group by its index in the regex.
@@ -1031,11 +1153,12 @@ impl<'r, 't> Captures<'r, 't> {
     /// If there is no match for that group or the index does not correspond to a group, `None` is
     /// returned. The index 0 returns the whole match.
     #[must_use]
+    #[inline]
     pub fn get(&self, i: usize) -> Option<Match<'t>> {
         let Captures {
             text, ref saves, ..
         } = self;
-        let slot = i * 2;
+        let slot = i.saturating_mul(2);
         if slot >= saves.len() {
             return None;
         }
@@ -1054,6 +1177,7 @@ impl<'r, 't> Captures<'r, 't> {
     /// Returns the match for a named capture group.  Returns `None` the capture
     /// group did not match or if there is no group with the given name.
     #[must_use]
+    #[inline]
     pub fn name(&self, name: &str) -> Option<Match<'t>> {
         self.named_groups.get(name).and_then(|i| self.get(*i))
     }
@@ -1076,8 +1200,7 @@ impl<'r, 't> Captures<'r, 't> {
     /// To write a literal `$`, use `$$`.
     ///
     /// For more control over expansion, see [`Expander`].
-    ///
-    /// [`Expander`]: expand/struct.Expander.html
+    #[inline]
     pub fn expand(&self, replacement: &str, dst: &mut String) {
         Expander::default().append_expansion(dst, replacement, self);
     }
@@ -1085,13 +1208,15 @@ impl<'r, 't> Captures<'r, 't> {
     /// Iterate over the captured groups in order in which they appeared in the regex. The first
     /// capture corresponds to the whole match.
     #[must_use]
+    #[inline]
     pub fn iter<'c>(&'c self) -> SubCaptureMatches<'c, 't> {
-        SubCaptureMatches { caps: self, i: 0 }
+        SubCaptureMatches(self.saves.chunks_exact(2), self.text)
     }
 
     /// How many groups were captured. This is always at least 1 because group 0 returns the whole
     /// match.
     #[must_use]
+    #[inline]
     pub fn len(&self) -> usize {
         self.saves.len() / 2
     }
@@ -1146,33 +1271,62 @@ impl<'r, 't, 'i> Index<&'i str> for Captures<'r, 't> {
     }
 }
 
-impl<'c, 't> Iterator for SubCaptureMatches<'c, 't> {
-    type Item = Option<Match<'t>>;
+/// Iterator for captured groups in order in which they appear in the regex.
+#[derive(Debug)]
+pub struct SubCaptureMatches<'r, 't>(ChunksExact<'r, usize>, &'t str);
 
-    fn next(&mut self) -> Option<Option<Match<'t>>> {
-        if self.i < self.caps.len() {
-            let result = self.caps.get(self.i);
-            self.i += 1;
-            Some(result)
-        } else {
+impl<'c, 't> SubCaptureMatches<'c, 't> {
+    fn get(&self, span: [usize; 2]) -> Option<Match<'t>> {
+        if span[0] == usize::MAX {
             None
+        } else {
+            Some(Match {
+                text: self.1,
+                start: span[0],
+                end: span[1],
+            })
         }
     }
 }
 
-// TODO: might be nice to implement ExactSizeIterator etc for SubCaptures
+impl<'c, 't> Iterator for SubCaptureMatches<'c, 't> {
+    type Item = Option<Match<'t>>;
 
-/// An iterator over capture names in a [Regex].  The iterator
-/// returns the name of each group, or [None] if the group has
-/// no name.  Because capture group 0 cannot have a name, the
-/// first item returned is always [None].
-pub struct CaptureNames<'r>(std::vec::IntoIter<Option<&'r str>>);
+    fn next(&mut self) -> Option<Option<Match<'t>>> {
+        let span = self.0.next()?.try_into().unwrap();
+        Some(self.get(span))
+    }
 
-impl Debug for CaptureNames<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<CaptureNames>")
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+
+    fn count(self) -> usize {
+        self.0.count()
     }
 }
+
+impl<'c, 't> DoubleEndedIterator for SubCaptureMatches<'c, 't> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let span = self.0.next_back()?.try_into().unwrap();
+        Some(self.get(span))
+    }
+}
+
+impl<'c, 't> ExactSizeIterator for SubCaptureMatches<'c, 't> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<'c, 't> FusedIterator for SubCaptureMatches<'c, 't> {}
+
+/// An iterator over capture names in a [`Regex`].  The iterator
+/// returns the name of each group, or `None` if the group has
+/// no name.  Because capture group 0 cannot have a name, the
+/// first item returned is always `None`.
+#[derive(Debug, Clone)]
+pub struct CaptureNames<'r>(std::vec::IntoIter<Option<&'r str>>);
 
 impl<'r> Iterator for CaptureNames<'r> {
     type Item = Option<&'r str>;
@@ -1180,6 +1334,43 @@ impl<'r> Iterator for CaptureNames<'r> {
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+
+    fn count(self) -> usize {
+        self.0.count()
+    }
+}
+
+impl<'r> DoubleEndedIterator for CaptureNames<'r> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.0.next_back()
+    }
+}
+
+impl<'r> ExactSizeIterator for CaptureNames<'r> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<'r> FusedIterator for CaptureNames<'r> {}
+
+#[inline]
+fn codepoint_len(b: u8) -> usize {
+    match b {
+        b if b < 0x80 => 1,
+        b if b < 0xe0 => 2,
+        b if b < 0xf0 => 3,
+        _ => 4,
+    }
+}
+
+#[inline]
+fn codepoint_len_at(s: impl AsRef<[u8]>, ix: usize) -> usize {
+    codepoint_len(s.as_ref()[ix])
 }
 
 // precondition: ix > 0
@@ -1198,25 +1389,8 @@ fn prev_codepoint_ix(s: impl AsRef<[u8]>, mut ix: usize) -> usize {
 }
 
 #[inline]
-fn codepoint_len(b: u8) -> usize {
-    match b {
-        b if b < 0x80 => 1,
-        b if b < 0xe0 => 2,
-        b if b < 0xf0 => 3,
-        _ => 4,
-    }
-}
-
-/// Returns the smallest possible index of the next valid UTF-8 sequence
-/// starting after `i`.
-/// Adapted from a function with the same name in the `regex` crate.
-#[inline]
-fn next_utf8(text: &str, i: usize) -> usize {
-    let b = match text.as_bytes().get(i) {
-        None => return i + 1,
-        Some(&b) => b,
-    };
-    i + codepoint_len(b)
+fn next_codepoint_ix(s: impl AsRef<[u8]>, ix: usize) -> usize {
+    ix + codepoint_len_at(s, ix)
 }
 
 // If this returns false, then there is no possible backref in the re
@@ -1301,21 +1475,6 @@ mod tests {
         ])));
         assert_eq!(to_str(e), "([ab])");
     }
-
-    // #[test]
-    // fn as_str_debug() {
-    //     let s = r"(a+)b\1";
-    //     let regex = Regex::new(s).unwrap();
-    //     assert_eq!(s, regex.as_str());
-    //     assert_eq!(s, format!("{:?}", regex));
-    // }
-
-    // #[test]
-    // fn display() {
-    //     let s = r"(a+)b\1";
-    //     let regex = Regex::new(s).unwrap();
-    //     assert_eq!(s, format!("{}", regex));
-    // }
 
     #[test]
     fn from_str() {

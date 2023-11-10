@@ -619,6 +619,7 @@ pub(crate) fn compile_inner(
 }
 
 /// Compile the analyzed expressions into a program.
+#[allow(clippy::missing_errors_doc)] // internal API
 pub fn compile(info: &Info<'_>, backrefs: &BitSet) -> Result<Prog> {
     compile_with_options(info, backrefs, RegexOptions::default())
 }

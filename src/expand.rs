@@ -6,7 +6,7 @@ use std::mem;
 
 /// A set of options for expanding a template string using the contents
 /// of capture groups.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expander {
     sub_char: char,
     open: &'static str,
@@ -67,6 +67,10 @@ impl Expander {
     /// - A reference to a named group that does not occur in `regex`
     /// - An opening group name delimiter without a closing delimiter
     /// - Using an empty string as a group name
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the template contains invalid references.
     pub fn check(&self, template: &str, regex: &Regex) -> crate::Result<()> {
         let on_group_num = |num| {
             if num == 0 {
@@ -130,6 +134,7 @@ impl Expander {
 
     /// Expands the template string `template` using the syntax defined
     /// by this expander and the values of capture groups from `captures`.
+    #[allow(clippy::missing_panics_doc)] // this cannot panic
     #[must_use]
     pub fn expansion(&self, template: &str, captures: &Captures<'_, '_>) -> String {
         let mut cursor = io::Cursor::new(Vec::with_capacity(template.len()));
@@ -140,6 +145,7 @@ impl Expander {
 
     /// Appends the expansion produced by `expansion` to `dst`.  Potentially more efficient
     /// than calling `expansion` directly and appending to an existing string.
+    #[allow(clippy::missing_panics_doc)] // this cannot panic
     pub fn append_expansion(&self, dst: &mut String, template: &str, captures: &Captures<'_, '_>) {
         let pos = dst.len();
         let mut cursor = io::Cursor::new(mem::take(dst).into_bytes());
@@ -151,6 +157,10 @@ impl Expander {
 
     /// Writes the expansion produced by `expansion` to `dst`.  Potentially more efficient
     /// than calling `expansion` directly and writing the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if write to `dst` failed.
     pub fn write_expansion(
         &self,
         mut dst: impl io::Write,

@@ -1,6 +1,10 @@
 use regex_automata::meta::BuildError as RaBuildError;
 use regex_syntax::Error as RsParseError;
+use std::error::Error as StdError;
 use std::fmt;
+
+#[allow(unused_imports)] // this is for docstring
+use crate::RegexBuilder;
 
 /// Result type for this crate with specific error enum.
 pub type Result<T> = ::std::result::Result<T, Error>;
@@ -61,10 +65,10 @@ pub enum ParseError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CompileError {
-    /// regex-syntax crate error
+    /// `regex-syntax` crate error
     // Box it because RsParseError is too large
     InnerSyntaxError(Box<RsParseError>),
-    /// regex-automata crate error
+    /// `regex-automata` crate error
     // Box is because RaBuildError is too large
     InnerBuildError(Box<RaBuildError>),
     /// Look-behind assertion without constant size
@@ -84,14 +88,14 @@ pub enum CompileError {
 #[non_exhaustive]
 pub enum RuntimeError {
     /// Max stack size exceeded for backtracking while executing regex.
+    /// Configure using [`RegexBuilder::max_stack`].
     StackOverflow,
     /// Max limit for backtracking count exceeded while executing the regex.
-    /// Configure using
-    /// [`RegexBuilder::backtrack_limit`](struct.RegexBuilder.html#method.backtrack_limit).
+    /// Configure using [`RegexBuilder::backtrack_limit`].
     BacktrackLimitExceeded,
 }
 
-impl ::std::error::Error for Error {}
+impl StdError for Error {}
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -162,11 +166,5 @@ impl fmt::Display for Error {
                 write!(f, "Error executing regex: {runtime_error}")
             }
         }
-    }
-}
-
-impl From<CompileError> for Error {
-    fn from(compile_error: CompileError) -> Self {
-        Error::CompileError(compile_error)
     }
 }

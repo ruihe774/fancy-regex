@@ -36,6 +36,8 @@ use crate::codepoint_len;
 use crate::CompileError;
 use crate::Error;
 use crate::ParseError;
+#[allow(unused_imports)] // this is for docstring
+use crate::RegexBuilder;
 use crate::Result;
 use crate::MAX_RECURSION;
 
@@ -186,8 +188,13 @@ impl Expr {
         )
     }
 
-    /// Parse the regex and return an expression (AST) and a bit set with the indexes of groups
-    /// that are referenced by backrefs.
+    /// Parse the regex and return an expression (AST),
+    /// which can be used to build a regex using
+    /// [`RegexBuilder::build_from_expr_tree()`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ParseError`] if parsing failed.
     pub fn parse_tree(re: &str) -> Result<ExprTree> {
         ExprTree::parse(re)
     }
@@ -324,7 +331,16 @@ impl Expr {
         })
     }
 
-    /// Convert expression to a [`regex_syntax::hir::Hir`].
+    /// Concate and convert expressions to a [`regex_syntax::hir::Hir`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CompileError`] if [`regex_syntax::Error`] occurred.
+    ///
+    /// # Panics
+    ///
+    /// Panics if expressions cannot be represented by `Hir`
+    /// (i.e. fancy regexes).
     pub fn to_hir<E: Borrow<Expr>, I: IntoIterator<Item = E>>(
         exprs: I,
     ) -> Result<regex_syntax::hir::Hir> {
@@ -346,6 +362,10 @@ impl Expr {
     }
 
     /// Convert expression to a string
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CompileError`] if failed to convert this expression to string.
     pub fn to_str(&self) -> Result<String> {
         Ok(format!("{}", Expr::to_hir([self])?))
     }
@@ -415,8 +435,13 @@ pub struct ExprTree {
 }
 
 impl ExprTree {
-    /// Parse the regex and return an expression (AST) and a bit set with the indexes of groups
-    /// that are referenced by backrefs.
+    /// Parse the regex and return an expression (AST),
+    /// which can be used to build a regex using
+    /// [`RegexBuilder::build_from_expr_tree()`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ParseError`] if parsing failed.
     pub fn parse(re: &str) -> Result<ExprTree> {
         Parser::parse(re)
     }
@@ -433,8 +458,7 @@ pub(crate) struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    /// Parse the regex and return an expression (AST) and a bit set with the indexes of groups
-    /// that are referenced by backrefs.
+    /// Parse the regex and return an expression (AST).
     pub(crate) fn parse(re: &str) -> Result<ExprTree> {
         let mut p = Parser::new(re);
         let (ix, expr) = p.parse_re(0, 0)?;
