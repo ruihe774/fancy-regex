@@ -27,6 +27,9 @@ use alloc::{format, vec};
 
 use bit_set::BitSet;
 use regex::escape;
+use alloc::collections::BTreeMap;
+use core::convert::TryInto;
+use core::usize;
 
 use crate::LookAround::*;
 use crate::{codepoint_len, CompileError, Error, Expr, ParseError, Result, MAX_RECURSION};
@@ -38,10 +41,7 @@ const FLAG_SWAP_GREED: u32 = 1 << 3;
 const FLAG_IGNORE_SPACE: u32 = 1 << 4;
 const FLAG_UNICODE: u32 = 1 << 5;
 
-#[cfg(not(feature = "std"))]
-pub(crate) type NamedGroups = alloc::collections::BTreeMap<String, usize>;
-#[cfg(feature = "std")]
-pub(crate) type NamedGroups = std::collections::HashMap<String, usize>;
+pub(crate) type NamedGroups = BTreeMap<String, usize>;
 
 #[derive(Debug)]
 pub struct ExprTree {
@@ -288,8 +288,14 @@ impl<'a> Parser<'a> {
         if let Some((id, skip)) = parse_id(&self.re[ix..], open, close) {
             let group = if let Some(group) = self.named_groups.get(id) {
                 Some(*group)
-            } else if let Ok(group) = id.parse() {
-                Some(group)
+            } else if let Ok(group) = id.parse::<isize>() {
+                group.try_into().map_or_else(
+                    |_| {
+                        // relative backref
+                        self.curr_group.checked_add_signed(group + 1)
+                    },
+                    |group| Some(group),
+                )
             } else {
                 None
             };
@@ -329,7 +335,7 @@ impl<'a> Parser<'a> {
         let mut size = 1;
         if is_digit(b) {
             return self.parse_numbered_backref(ix + 1);
-        } else if b == b'k' {
+        } else if b == b'k' || b == b'g' {
             // Named backref: \k<name>
             return self.parse_named_backref(ix + 2, "<", ">");
         } else if b == b'A' || b == b'z' || b == b'b' || b == b'B' {
@@ -839,7 +845,7 @@ pub(crate) fn parse_id<'a>(s: &'a str, open: &'_ str, close: &'_ str) -> Option<
 }
 
 fn is_id_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_' || c == '-'
 }
 
 fn is_digit(b: u8) -> bool {
